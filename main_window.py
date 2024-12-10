@@ -12,6 +12,7 @@ from database import get_active_visitors, get_duty_trainers, get_visitors_in_gym
     start_attendance
 from hover_button import HoverButton
 from utils import scan_card, WorkerThread
+from subscription import SubscriptionWidget
 
 
 
@@ -51,6 +52,7 @@ class MainWindow(QWidget):
         self.fetch_data_thread = WorkerThread(self.fetch_data)
         self.fetch_data_thread.result_signal.connect(self.update_data)
         self.fetch_data_thread.start()
+
 
     def update_data(self, result):
         if result is None:

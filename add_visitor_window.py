@@ -3,6 +3,8 @@ from PyQt5.QtWidgets import QVBoxLayout, QLabel, QLineEdit, QGridLayout, QDialog
 from PyQt5.QtCore import Qt, QRectF, QPoint
 from PyQt5.QtGui import QPainter, QColor, QPen
 from hover_button import HoverButton
+from subscription import SubscriptionWidget
+
 
 class AddVisitorWindow(QDialog):
     def __init__(self):
@@ -96,6 +98,7 @@ class AddVisitorWindow(QDialog):
         button_grid_layout.addWidget(trainer_button, 1, 0, alignment=Qt.AlignCenter)
 
         subscription_button = HoverButton("+", 30, 30, 40, '#75A9A7', True, '', '', 5, '#5DEBE6')
+        subscription_button.clicked.connect(self.show_add_subscription)
         button_grid_layout.addWidget(subscription_button, 1, 1, alignment=Qt.AlignCenter)
 
         layout.addLayout(button_grid_layout)
@@ -115,6 +118,12 @@ class AddVisitorWindow(QDialog):
         layout.addStretch(1)
 
         self.setLayout(layout)
+
+    def show_add_subscription(self):
+        if not hasattr(self, 'add_visitor_window') or not self.add_visitor_window.isVisible():
+            self.add_visitor_window = SubscriptionWidget()
+            self.add_visitor_window.show()
+            self.add_visitor_window.raise_()
 
     def showEvent(self, event):
         super().showEvent(event)

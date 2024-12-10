@@ -192,4 +192,4 @@ class LoginWidget(QDialog):
 
     def closeEvent(self, event):
         # Close event handling
-        event.accept()
+        sys.exit()

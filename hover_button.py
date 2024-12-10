@@ -6,12 +6,12 @@ from PyQt5.QtCore import Qt
 class HoverButton(QPushButton):
     def __init__(self, text='', width: float = 347, height: float = 72, font_size: float = 22,
                  font_color: str = 'black', non_padding: bool = False, default_border: str = '',
-                 hover_border: str = '', border_radius: float = 18, hover_text_color: str = ''):
+                 hover_border: str = '', border_radius: float = 18, hover_text_color: str = '',margin: float = 0):
         super().__init__(text)
         self.setMouseTracking(True)  # Включаем отслеживание мыши
         self.width_value = width  # Сохраняем переданные значения ширины и высоты
         self.height_value = height
-
+        self.margin_value = margin
         self.font_size_value = font_size
         self.font_color_value = font_color
         self.border_radius_value = border_radius
@@ -53,6 +53,7 @@ class HoverButton(QPushButton):
             font-weight: 500;
             font-family: 'Unbounded';
             font-size: {self.font_size_value}px;
+            margin: {self.margin_value}px;
         }}
         """)
 
@@ -88,6 +89,7 @@ class HoverButton(QPushButton):
                    font-weight: 500;
                    font-family: 'Unbounded';
                    font-size: {self.font_size_value}px;
+                   margin: {self.margin_value}px;
                }}
            """)
         super().enterEvent(event)
