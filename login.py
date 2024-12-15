@@ -1,14 +1,23 @@
+# login.py
+
 import sys
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QLineEdit, QHBoxLayout, QPushButton, QDialog, QDesktopWidget, \
-    QCheckBox
-from PyQt5.QtCore import Qt, QRectF, QPoint, pyqtSignal, QSettings, QTimer
-from PyQt5.QtGui import QPainter, QColor, QPen, QBrush
+
+from PyQt5.QtWidgets import (
+    QVBoxLayout, QLabel, QLineEdit, QDialog, QDesktopWidget, QMessageBox
+)
+from PyQt5.QtCore import Qt, QRectF, QTimer
+from PyQt5.QtGui import QPainter, QColor, QPen
+
 from database import authenticate_user
 from hover_button import HoverButton
-from utils import WorkerThread
+import logging
+
+from utils import WorkerThread  # Убедитесь, что WorkerThread правильно импортируется
+
+logger = logging.getLogger(__name__)
+
 
 class LoginWidget(QDialog):
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Авторизация")
@@ -17,6 +26,8 @@ class LoginWidget(QDialog):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setObjectName("myParentWidget")
         self.login_button = None
+        self.current_user_id = None  # Добавляем атрибут для хранения user_id
+        self.role = None  # Добавляем атрибут для хранения роли пользователя
         self.setStyleSheet("""
             QWidget#myParentWidget {
                 background-color: transparent;
@@ -73,35 +84,28 @@ class LoginWidget(QDialog):
     def initUI(self):
         layout = QVBoxLayout(self)
 
-        # Title label
+        # Заголовок
         title_label = QLabel("Авторизация", self)
         title_label.setObjectName("titleLabel")
         layout.addWidget(title_label, alignment=Qt.AlignCenter)
 
-        # Username input field
+        # Поля ввода
         self.username_input = QLineEdit(self)
         self.username_input.setPlaceholderText("Логин")
         layout.addWidget(self.username_input)
 
-        # Password input field
         self.password_input = QLineEdit(self)
         self.password_input.setPlaceholderText("Пароль")
         self.password_input.setEchoMode(QLineEdit.Password)
         layout.addWidget(self.password_input)
 
-        # "Remember Me" checkbox
-        # self.remember_me_checkbox = QCheckBox("Запомнить меня", self)
-        # layout.addWidget(self.remember_me_checkbox)
-
-        # Login button
+        # Кнопка входа
         self.login_button = HoverButton("Войти", 190, 35, 15, '#5DEBE6', False, '#5DEBE6', '', 8)
         self.login_button.setFixedSize(180, 35)
         self.login_button.clicked.connect(self.authenticate_and_login)
         layout.addWidget(self.login_button, alignment=Qt.AlignCenter)
 
         self.setLayout(layout)
-        # Load saved data
-        # self.load_saved_data()
 
     def authenticate_and_login(self):
         username = self.username_input.text().strip()
@@ -113,54 +117,42 @@ class LoginWidget(QDialog):
                 self.password_input.setStyleSheet("border-color:red;")
             return
 
-        # Create and start authentication thread
+        # Сброс стилей при вводе
         self.username_input.setStyleSheet("border-color:#75A9A7;")
         self.password_input.setStyleSheet("border-color:#75A9A7;")
         self.login_button.set_border_color("Gold")
         self.login_button.set_hover_border_color("Yellow")
         self.login_button.set_font_color("Gold")
 
+        # Запуск потока для аутентификации
         self.auth_thread = WorkerThread(authenticate_user, username, password)
-
         self.auth_thread.result_signal.connect(self.handle_authentication_result)
         self.auth_thread.start()
 
     def handle_authentication_result(self, result):
-        if result:
-            # if self.remember_me_checkbox.isChecked():
-            #     self.save_login_data()
+        user_id, role = result  # Распаковываем кортеж, возвращаемый authenticate_user
+        print(role)
+        if user_id:
+            # Если аутентификация успешна, сохраняем user_id и роль
+            self.current_user_id = user_id
+            self.role = role
             self.login_button.set_border_color("#00FF00")
             self.login_button.set_hover_border_color("#00FF00")
             self.login_button.set_font_color("#14B814")
-            QTimer.singleShot(400, self.accept)
-             # Close window on successful login
+            QTimer.singleShot(400, self.accept)  # Закрыть диалог после задержки
+            logger.info(f"Пользователь с ID {self.current_user_id} успешно вошёл в систему.")
         else:
+            # Если аутентификация не удалась
             self.username_input.setStyleSheet("border-color:red;")
             self.password_input.setStyleSheet("border-color:red;")
             self.login_button.set_border_color('#5DEBE6')
             self.login_button.set_hover_border_color('#5DEBE6')
             self.login_button.set_font_color('#5DEBE6')
-
-    # def save_login_data(self):
-    #     # Store the username and remember me status using QSettings
-    #     settings = QSettings("MyOrganization", "MyApp")
-    #     settings.setValue("username", self.username_input.text())
-    #     settings.setValue("password", self.password_input.text())
-    #     settings.setValue("remember_me", self.remember_me_checkbox.isChecked())
-
-    # def load_saved_data(self):
-    #     # Check if "Remember me" is enabled and load saved data
-    #     settings = QSettings("MyOrganization", "MyApp")
-    #     remember_me = settings.value("remember_me", False, type=bool)
-    #
-    #     if remember_me:
-    #         # Pre-fill the username field
-    #         self.username_input.setText(settings.value("username", ""))
-    #         self.password_input.setText(settings.value("password", ""))
-    #         self.remember_me_checkbox.setChecked(True)
+            QMessageBox.warning(self, "Ошибка авторизации", "Неверный логин или пароль.")
+            logger.warning("Не удалось аутентифицировать пользователя")
 
     def paintEvent(self, event):
-        # Custom paint event for rounded corners and border
+        # Кастомная отрисовка для скругленных углов и границы
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
@@ -181,15 +173,15 @@ class LoginWidget(QDialog):
         painter.end()
 
     def mousePressEvent(self, event):
-        # Store initial position for dragging window
+        # Сохранение начальной позиции для перетаскивания окна
         self.oldPos = event.globalPos()
 
     def mouseMoveEvent(self, event):
-        # Move window based on mouse drag
+        # Перемещение окна при перетаскивании
         delta = event.globalPos() - self.oldPos
         self.move(self.pos() + delta)
         self.oldPos = event.globalPos()
 
     def closeEvent(self, event):
-        # Close event handling
+        # Обработка события закрытия окна
         sys.exit()

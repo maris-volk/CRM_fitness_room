@@ -1,8 +1,10 @@
 import datetime
 import hashlib
+import logging
 import random
 import sys
 import hashlib
+import traceback
 
 import bcrypt
 from barcode import Code128
@@ -20,10 +22,11 @@ import serial.tools.list_ports
 import psycopg2  # Для подключения к базе данных PostgreSQL
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, \
-    QGraphicsDropShadowEffect, QSpacerItem, QTableWidgetItem, QLineEdit, QTableWidget, QHeaderView, QListWidget
+    QGraphicsDropShadowEffect, QSpacerItem, QTableWidgetItem, QLineEdit, QTableWidget, QHeaderView, QListWidget, \
+    QSizePolicy
 from PyQt5.QtChart import QChartView, QBarSeries, QBarSet, QChart, QBarCategoryAxis, QValueAxis
 from PyQt5.QtCore import Qt, QMargins, QDir, pyqtSignal, QThread, QSettings
-from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QFontDatabase
+from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QFontDatabase, QPixmap
 from PyQt5.QtCore import QTimer
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -33,26 +36,29 @@ import datetime
 from database import connect_to_db
 
 
-class WorkerThread(QThread):
-    result_signal = pyqtSignal(object)
+logger = logging.getLogger(__name__)
 
-    def __init__(self, func, *args):
+
+class WorkerThread(QThread):
+    result_signal = pyqtSignal(object)  # Сигнал для передачи результата
+    finished_signal = pyqtSignal()      # Сигнал для уведомления о завершении
+
+    def __init__(self, func, *args, **kwargs):
         super().__init__()
         self.func = func
         self.args = args
-        self._is_running = False
+        self.kwargs = kwargs
 
     def run(self):
-        if self._is_running:
-
-            return
-
-        self._is_running = True
         try:
-            result = self.func(*self.args)
+            result = self.func(*self.args, **self.kwargs)
             self.result_signal.emit(result)
+        except Exception as e:
+            print(f"Ошибка в WorkerThread: {e}")
+            traceback.print_exc()
+            self.result_signal.emit(None)
         finally:
-            self._is_running = False
+            self.finished_signal.emit()
 
 def load_fonts_from_dir(directory):
     families = set()
@@ -61,6 +67,119 @@ def load_fonts_from_dir(directory):
         families |= set(QFontDatabase.applicationFontFamilies(_id))
     return families
 
+# class ResizablePhoto(QLabel):
+#     def __init__(self, image_path, parent=None):
+#         super().__init__(parent)
+#         self.image_path = image_path
+#         self.setScaledContents(True)  # Включаем автоматическое масштабирование содержимого
+#         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # Позволяем растягиваться
+#
+#     def resizeEvent(self, event):
+#         """Обрабатывает изменение размера виджета и масштабирует изображение."""
+#         pixmap = QPixmap(self.image_path)
+#         scaled_pixmap = pixmap.scaled(self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+#         self.setPixmap(scaled_pixmap)
+#         super().resizeEvent(event)
+class FillPhoto(QLabel):
+    def __init__(self, image_path="", parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet("""
+            background-color: lightgray;
+            border-radius: 10px;
+            border: 3px solid #75A9A7;
+            font-size: 20px;
+            color: #555555;
+        """)
+        self.setPixmap(QPixmap())  # Устанавливаем пустой QPixmap по умолчанию
+        if image_path:
+            self.setPhoto(image_path)
+        else:
+            self.setText("Фото не установлено")
+
+    def setPhoto(self, image_path):
+        """
+        Устанавливает фото из файла.
+        :param image_path: Путь к изображению
+        """
+        pixmap = QPixmap(image_path)
+        if not pixmap.isNull():
+            self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.setText("")  # Убираем текст, если фото загружено
+            logger.info(f"Фото успешно загружено из файла: {image_path}")
+        else:
+            self.setText("Не удалось загрузить фото")
+            self.setStyleSheet("""
+                background-color: lightgray;
+                border-radius: 10px;
+                border: 3px solid #75A9A7;
+                font-size: 20px;
+                color: red;
+            """)
+            logger.error(f"Не удалось загрузить фото из файла: {image_path}")
+
+    def setPhotoData(self, photo_data):
+        """
+        Устанавливает фото из байтовых данных.
+        :param photo_data: Байтовые данные изображения
+        """
+        if photo_data:
+            pixmap = QPixmap()
+            if pixmap.loadFromData(photo_data):
+                pixmap = pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.setPixmap(pixmap)
+                self.setText("")  # Убираем текст, если фото загружено
+                logger.info("Фото успешно загружено из байтовых данных.")
+            else:
+                self.setText("Не удалось загрузить фото")
+                self.setStyleSheet("""
+                    background-color: lightgray;
+                    border-radius: 10px;
+                    border: 3px solid #75A9A7;
+                    font-size: 20px;
+                    color: red;
+                """)
+                logger.error("Не удалось загрузить фото из байтовых данных.")
+        else:
+            self.setText("Фото не установлено")
+            self.setStyleSheet("""
+                background-color: lightgray;
+                border-radius: 10px;
+                border: 3px solid #75A9A7;
+                font-size: 20px;
+                color: #555555;
+            """)
+            logger.warning("Фото не установлено: данные отсутствуют.")
+
+    def resizeEvent(self, event):
+        """
+        Обеспечивает масштабирование изображения при изменении размера виджета.
+        """
+        pixmap = self.pixmap()
+        if pixmap and not pixmap.isNull():
+            self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logger.debug("Фото масштабировано при изменении размера виджета.")
+        else:
+            logger.debug("Нет фото для масштабирования при изменении размера виджета.")
+class ResizablePhoto(QLabel):
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
+        self.image_path = image_path
+        self.setScaledContents(False)  # Отключаем автоматическое масштабирование содержимого
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # Позволяем растягиваться
+        self.pixmap_original = QPixmap(self.image_path)  # Сохраняем оригинальное изображение
+
+    def resizeEvent(self, event):
+        """Обрабатывает изменение размера виджета и масштабирует изображение."""
+        if not self.pixmap_original.isNull():
+            # Масштабируем изображение с сохранением пропорций
+            scaled_pixmap = self.pixmap_original.scaled(
+                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self.setPixmap(scaled_pixmap)
+        super().resizeEvent(event)
+
+# Пример использования
 
 class TariffCalculator:
     def __init__(self):
