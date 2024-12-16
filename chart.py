@@ -266,7 +266,7 @@ class ChartWidget(QWidget):
             self.fetch_data_thread.result_signal.connect(
                 lambda data: self.process_chart_data(
                     data,
-                    ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],  # Английские аббревиатуры
+                    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'],  # Английские аббревиатуры
                     f"Неделя {week_number} {start_date.strftime('%m.%Y')}"
                 )
             )
@@ -283,7 +283,7 @@ class ChartWidget(QWidget):
             self.fetch_data_thread.result_signal.connect(
                 lambda data: self.process_chart_data(
                     data,
-                    ["Week 1", "Week 2", "Week 3", "Week 4", "Week 5"],
+                    ["Нед 1", "Нед 2", "Нед 3", "Нед 4", "Нед 5"],
                     f"{start_date.strftime('%m.%Y')}"
                 )
             )

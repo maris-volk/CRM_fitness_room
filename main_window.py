@@ -17,6 +17,7 @@ from database import get_active_visitors, get_duty_trainers, count_visitors_in_g
     end_attendance, \
     start_attendance, execute_query
 from hover_button import HoverButton, TrainerButton
+from search_client import ClientSearchWindow
 from utils import scan_card, WorkerThread, ResizablePhoto, FillPhoto
 from subscription import SubscriptionWidget, SelectionGroupWidget
 
@@ -124,6 +125,12 @@ class MainWindow(QWidget):
             self.add_visitor_window = AddVisitorWindow()
             self.add_visitor_window.show()
             self.add_visitor_window.raise_()
+
+    def show_view_visitors_window(self):
+        if not hasattr(self, 'view_visitors_window') or not self.view_visitors_window.isVisible():
+            self.view_visitors_window = ClientSearchWindow()
+            self.view_visitors_window.show()
+            self.view_visitors_window.raise_()
 
     def scan_card_for_attendance(self):
         self.scan_thread = WorkerThread(self._scan_card_and_update_attendance)
@@ -249,6 +256,7 @@ class MainWindow(QWidget):
         scan_card_button = HoverButton("Сканировать карту")
         scan_card_button.clicked.connect(self.scan_card_for_attendance)
         visitor_list_button = HoverButton("Список посетителей")
+        visitor_list_button.clicked.connect(self.show_view_visitors_window)
         left_panel.addWidget(new_visitor_button)
         left_panel.addSpacing(20)
         left_panel.addWidget(scan_card_button)
