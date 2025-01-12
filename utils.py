@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 class WorkerThread(QThread):
     result_signal = pyqtSignal(object)  # Сигнал для передачи результата
+    error_signal = pyqtSignal(str)      # Сигнал для передачи сообщений об ошибке
     finished_signal = pyqtSignal()      # Сигнал для уведомления о завершении
 
     def __init__(self, func, *args, **kwargs):
@@ -48,17 +49,27 @@ class WorkerThread(QThread):
         self.func = func
         self.args = args
         self.kwargs = kwargs
+        self.is_running = True  # Флаг для управления завершением потока
 
     def run(self):
         try:
-            result = self.func(*self.args, **self.kwargs)
-            self.result_signal.emit(result)
+            if self.is_running:  # Проверяем, активен ли поток
+                result = self.func(*self.args, **self.kwargs)
+                self.result_signal.emit(result)  # Отправляем результат
         except Exception as e:
-            print(f"Ошибка в WorkerThread: {e}")
+            error_message = f"Ошибка в WorkerThread: {e}"
+            logger.error(error_message)
             traceback.print_exc()
-            self.result_signal.emit(None)
+            self.error_signal.emit(error_message)  # Отправляем сообщение об ошибке
         finally:
-            self.finished_signal.emit()
+            self.finished_signal.emit()  # Сигнал о завершении потока
+
+    def terminate(self):
+        """Безопасное завершение потока."""
+        self.is_running = False
+        super().terminate()
+
+
 
 def load_fonts_from_dir(directory):
     families = set()

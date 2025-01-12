@@ -3,6 +3,7 @@ import hashlib
 import logging
 import random
 import sys
+import traceback
 from collections import OrderedDict
 
 import bcrypt
@@ -27,7 +28,6 @@ from email.mime.text import MIMEText
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 # Настройка пула соединений
 connection_pool = psycopg2.pool.ThreadedConnectionPool(
@@ -61,7 +61,164 @@ def execute_query(query, params=None, fetch=True):
         return None
     finally:
         if conn:
-            connection_pool.putconn(conn)
+            connection_pool.putconn(conn)  # Возвращаем соединение в пул
+
+
+def count_all_trainers():
+    """
+    Подсчитывает общее количество тренеров в базе данных.
+
+    :return: Общее количество тренеров.
+    """
+    try:
+        query = """
+            SELECT COUNT(*) as total_trainers
+            FROM trainer;
+        """
+        result = execute_query(query)
+        # Предполагается, что execute_query возвращает список кортежей
+        return result[0][0] if result else 0
+    except Exception as e:
+        logger.error(f"Ошибка при подсчёте количества тренеров: {e}")
+        return 0
+
+
+def get_schedule_for_week(trainer_id, start_date, end_date):
+    """
+    Получает расписание тренера за неделю.
+    :param trainer_id: ID тренера.
+    :param start_date: Начальная дата (первая дата недели).
+    :param end_date: Конечная дата (последняя дата недели).
+    :return: Словарь с данными расписания по дням.
+    """
+    query = """
+        SELECT 
+            ts.start_time::date AS day_date,
+            ts.start_time,
+            ts.end_time,
+            c.first_name || ' ' || c.surname AS client_name
+        FROM 
+            training_slots ts
+        LEFT JOIN 
+            client c ON ts.client = c.client_id
+        WHERE 
+            ts.trainer = %s AND ts.start_time::date BETWEEN %s AND %s;
+    """
+    result = execute_query(query, (trainer_id, start_date, end_date))
+    if result:
+        schedule_by_day = {}
+        for row in result:
+            day_date = row[0]
+            if day_date not in schedule_by_day:
+                schedule_by_day[day_date] = []
+            schedule_by_day[day_date].append({
+                "start_time": row[1],
+                "end_time": row[2],
+                "client": row[3]
+            })
+        print(schedule_by_day)
+        return schedule_by_day
+    return {}
+
+def get_schedule_data_with_hash(trainer_id, start_date, end_date):
+    """
+    Получает данные расписания и хэш для заданного тренера и периода.
+    :param trainer_id: ID тренера.
+    :param start_date: Начальная дата недели.
+    :param end_date: Конечная дата недели.
+    :return: Кортеж (хэш, данные расписания) или None.
+    """
+    # Запрос на получение хэша
+    query_hash = """
+        SELECT MD5(STRING_AGG(CONCAT_WS(',', ts.start_time, ts.end_time, c.first_name, c.surname), ',')) AS hash
+        FROM training_slots ts
+        LEFT JOIN client c ON ts.client = c.client_id
+        WHERE ts.trainer = %s AND ts.start_time::date BETWEEN %s AND %s;
+    """
+    hash_result = execute_query(query_hash, (trainer_id, start_date, end_date))
+    if not hash_result or not hash_result[0][0]:
+        return None
+
+    db_hash = hash_result[0][0]
+
+    # Запрос на получение данных
+    query_data = """
+        SELECT ts.start_time, ts.end_time, CONCAT(c.first_name, ' ', c.surname) AS client
+        FROM training_slots ts
+        LEFT JOIN client c ON ts.client = c.client_id
+        WHERE ts.trainer = %s AND ts.start_time::date BETWEEN %s AND %s
+        ORDER BY ts.start_time;
+    """
+    data_result = execute_query(query_data, (trainer_id, start_date, end_date))
+
+    # Преобразуем данные в формат словаря, сгруппированного по дням
+    schedule_data = {}
+    for row in data_result:
+        day_date = row[0].date()  # Дата из start_time
+        slot = {
+            "start_time": row[0],
+            "end_time": row[1],
+            "client": row[2]
+        }
+        if day_date not in schedule_data:
+            schedule_data[day_date] = []
+        schedule_data[day_date].append(slot)
+
+    return db_hash, schedule_data
+
+
+
+def get_all_trainers():
+    """
+    Возвращает список всех тренеров из базы данных.
+    :return: Список словарей с информацией о тренерах.
+    """
+    print("get_all_trainers: старт функции")
+    query = """
+        SELECT trainer_id, first_name, surname, photo
+        FROM trainer;
+    """
+    try:
+        print("get_all_trainers: выполнение запроса")
+        result = execute_query(query)
+        print(f"get_all_trainers: результат запроса - {result}")
+        if result:
+            trainers = []
+            for row in result:
+                trainers.append({
+                    "id": row[0],
+                    "name": f"{row[1]} {row[2]}",
+                    "image": row[3]  # Байтовое изображение
+                })
+            print(f"get_all_trainers: список тренеров - {trainers}")
+            return trainers
+        print("get_all_trainers: результат пустой")
+        return []
+    except Exception as e:
+        print(f"Ошибка в get_all_trainers: {e}")
+        traceback.print_exc()
+        return []
+
+
+
+
+def fetch_trainers_from_db():
+    """
+    Извлекает список тренеров из базы данных.
+    Возвращает список словарей с именами и фотографиями тренеров.
+    """
+    query = """
+        SELECT 
+            CONCAT(surname, ' ', first_name, ' ', COALESCE(patronymic, '')) AS name,
+            photo
+        FROM trainer
+    """
+    result = execute_query(query)
+    if result is None:
+        logger.error("Не удалось получить данные тренеров из базы.")
+        return []
+    return [{"name": row[0], "image": row[1]} for row in result]
+
 
 def authenticate_user(username, password):
     """
@@ -105,8 +262,6 @@ def connect_to_db():
     except Exception as error:
         print(f"ошибка подключения к базе данных: {error}")
         sys.exit(1)
-
-
 
 
 def add_client(surname, first_name, patronymic, phone_number, subscription_id):
@@ -160,14 +315,26 @@ def get_duty_trainers():
     Возвращает список тренеров на смене.
     """
     query = """
-        SELECT trainer_id, first_name, surname FROM trainer
+        SELECT 
+            t.trainer_id, 
+            t.surname, 
+            t.first_name, 
+            t.patronymic, 
+            t.phone_number, 
+            t.description, 
+            t.photo
+        FROM 
+            trainer t
+        JOIN 
+            training_slots ts ON t.trainer_id = ts.trainer
+        WHERE 
+            NOW() BETWEEN ts.start_time AND ts.end_time;
     """
-    results = execute_query(query)
-    if results:
-        return results
-    else:
-        logger.error("Не удалось получить список тренеров")
+    result = execute_query(query)
+    if result is None:
+        logger.error("Не удалось получить дежурных тренеров.")
         return []
+    return result
 
 
 def check_visitor_in_gym(client_id):
@@ -423,21 +590,6 @@ def count_visitors_in_gym():
         return 0
 
 
-def get_duty_trainers():
-    """
-    Возвращает список тренеров на смене.
-    """
-    query = """
-        SELECT trainer_id, first_name, surname FROM trainer
-    """
-    results = execute_query(query)
-    if results:
-        return results
-    else:
-        logger.error("Не удалось получить список тренеров")
-        return []
-
-
 def check_visitor_in_gym(client_id):
     """
     Проверяет, находится ли посетитель в зале по client_id.
@@ -650,8 +802,6 @@ def count_visitors_in_gym():
         return 0
 
 
-
-
 # 5. Добавление нового посетителя
 def add_new_visitor(surname, first_name, patronymic, phone_number, subscription_id):
     """
@@ -797,25 +947,6 @@ def get_all_clients():
         return result if result else []
     except Exception as e:
         logger.error(f"Ошибка при получении списка клиентов: {e}")
-        return []
-
-
-# 11. Получение списка всех тренеров
-def get_all_trainers():
-    """
-    Получает список всех тренеров.
-
-    :return: Список кортежей с данными тренеров.
-    """
-    try:
-        query = """
-            SELECT trainer_id, surname, first_name, patronymic, phone_number, description
-            FROM trainer;
-        """
-        result = execute_query(query)
-        return result if result else []
-    except Exception as e:
-        logger.error(f"Ошибка при получении списка тренеров: {e}")
         return []
 
 

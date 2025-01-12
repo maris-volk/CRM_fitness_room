@@ -22,6 +22,7 @@ class ChartWidget(QWidget):
         self.current_period = datetime.date.today()
         self.granularity = 'day'  # Возможные значения: 'day', 'week', 'month', 'year'
         self.is_fetching = False  # Флаг для управления потоками
+        self.chart_view = self.create_chart_view()
         self.initUI()
 
     def initUI(self):
@@ -53,7 +54,7 @@ class ChartWidget(QWidget):
         top_layout.addWidget(self.prev_button, alignment=Qt.AlignVCenter)
 
         # Диаграмма
-        self.chart_view = self.create_chart_view()
+        self.chart_view = self.chart_view
         self.chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.chart_view.setMinimumWidth(600)  # Устанавливаем минимальную ширину
         top_layout.addWidget(self.chart_view)
@@ -165,13 +166,12 @@ class ChartWidget(QWidget):
 
         set0 = QBarSet("Посетители")
         # Пример данных; замените на реальные данные при необходимости
-        set0.append([1, 2, 3, 4, 5, 3, 5])
 
         set0.setColor(QColor("#628F8D"))
 
         series = QBarSeries()
         series.append(set0)
-        series.hovered.connect(self.show_tooltip)
+
 
         chart = QChart()
         chart.addSeries(series)
@@ -218,17 +218,26 @@ class ChartWidget(QWidget):
         chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # Обеспечиваем расширение
         chart_view.setMinimumWidth(600)  # Устанавливаем минимальную ширину
         chart_view.setRenderHint(QPainter.Antialiasing)
+        series.hovered.connect(self.show_tooltip)
         return chart_view
 
-    def show_tooltip(self, status, set, point):
+    def show_tooltip(self, status, barset, index):
         """
         Показывает подсказку при наведении на график.
         """
         if status:
-            # Получаем значение из точки данных
-            value = set.at(point.x())
-            tooltip_text = f"Посетители: {value}"
-            QToolTip.showText(QCursor.pos(), tooltip_text)
+            # Проверяем порядок аргументов: index может быть целым числом, а barset объектом QBarSet
+            if isinstance(barset, QBarSet) and isinstance(index, int):
+                value = barset.at(index)  # Получаем значение из QBarSet по индексу
+                tooltip_text = f"Посетители: {value}"
+                QToolTip.showText(QCursor.pos(), tooltip_text)
+            elif isinstance(barset, int) and isinstance(index, QBarSet):
+                # Если порядок аргументов перепутан
+                value = index.at(barset)  # Здесь barset — это индекс
+                tooltip_text = f"Посетители: {value}"
+                QToolTip.showText(QCursor.pos(), tooltip_text)
+            else:
+                logger.warning(f"Неверные данные в сигнале hovered: barset={barset}, index={index}")
 
     def update_chart(self):
         """

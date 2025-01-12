@@ -50,6 +50,10 @@ class SelectionGroupWidget(QFrame):
         self.setFixedWidth(300)
         self.setLayout(self.layout)
 
+    def get_selected_option(self):
+        """Возвращает текущую выбранную опцию."""
+        return self.selected_option
+
     def set_selected_option(self, option):
         """Устанавливает указанную опцию как выбранную."""
         if option in self.options:

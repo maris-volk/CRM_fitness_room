@@ -228,7 +228,9 @@ class ClientSearchWindow(QWidget):
         """
         Загружает список клиентов из БД через WorkerThread.
         """
+        print('a')
         def fetch_clients():
+            print('b')
             query = """
                 SELECT c.client_id, 
                        c.surname || ' ' || c.first_name AS name, 
@@ -251,7 +253,9 @@ class ClientSearchWindow(QWidget):
                 LEFT JOIN visit_fitness_room v ON c.client_id = v.client
                 ORDER BY c.membership_start_date DESC;
             """
-            return execute_query(query)
+            result = execute_query(query)
+            print(result)
+            return result
 
         self.worker_thread = WorkerThread(fetch_clients)
         self.worker_thread.result_signal.connect(self.display_clients)

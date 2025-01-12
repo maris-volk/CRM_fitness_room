@@ -155,6 +155,8 @@ class HoverButton(QPushButton):
         shadow = self.graphicsEffect()
         if isinstance(shadow, QGraphicsDropShadowEffect):
             shadow.setBlurRadius(blur_radius)
+
+
 class TrainerButton(QWidget):
     clicked = pyqtSignal()  # Пользовательский сигнал для клика
 
