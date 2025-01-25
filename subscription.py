@@ -1,6 +1,6 @@
 import re
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QLineEdit, QGridLayout, QDialog, QPushButton, QFrame, \
-    QGraphicsDropShadowEffect
+    QGraphicsDropShadowEffect, QMessageBox
 from PyQt5.QtCore import Qt, QRectF, QPoint, pyqtSignal, QDate
 from PyQt5.QtGui import QPainter, QColor, QPen
 from hover_button import HoverButton
@@ -27,8 +27,10 @@ dict_widget = {}
 qwidget_clicked = False
 calculator = TariffCalculator()
 
+
 class SelectionGroupWidget(QFrame):
     clicked = pyqtSignal()
+
     def __init__(self, idd: int, options: list, group_type: str, parent=None):
         super().__init__(parent)
         self.options = options
@@ -142,7 +144,6 @@ class SelectionGroupWidget(QFrame):
             week_number = int(selected_week.split()[0])  # Извлекаем номер недели
             self.update_days(week_number)
 
-
     def mousePressEvent(self, event):
         """Обрабатывает событие нажатия мыши."""
         global qwidget_clicked
@@ -163,8 +164,6 @@ class SelectionGroupWidget(QFrame):
         # Создаем новые элементы
         self.create_selection_widget1()
 
-
-
     def create_selection_widget1(self):
         for option in self.options:
             label = SelectableLabel(option, font_size=15)
@@ -173,17 +172,18 @@ class SelectionGroupWidget(QFrame):
                 lambda opt=option, grp_type=self.group_type: self.select_option(opt, grp_type))
             self.layout.addWidget(label)
 
-
     def mouseReleaseEvent(self, event):
         """Обрабатывает событие нажатия мыши."""
         global qwidget_clicked
         qwidget_clicked = False
 
 
-
 class SubscriptionOptionWidget(QFrame):
-    def __init__(self, period: str, classes: list, times: list, prices: dict, idd: int = 1):
+    confirmed = pyqtSignal(dict)
+
+    def __init__(self, period: str, classes: list, times: list, idd: int = 1):
         super().__init__()
+
         self.idd = idd
         global calculator
         self.calculator = calculator
@@ -193,7 +193,6 @@ class SubscriptionOptionWidget(QFrame):
         self.period = period  # Длительность периода
         self.classes = classes  # Варианты количества занятий
         self.times = times  # Варианты времени занятий
-        self.prices = prices  # Словарь с ценами
 
         self.selected_class_count = None  # Выбранное количество занятий
         self.selected_time = None  # Выбранное время занятия
@@ -283,7 +282,7 @@ class SubscriptionOptionWidget(QFrame):
         grid_layout.addWidget(label_time, 4, 0, 1, 2, alignment=Qt.AlignCenter)
 
         # Шестая строка - Виджет для выбора времени занятий
-        self.time_widget = SelectionGroupWidget(self.idd,self.times, "time", self)
+        self.time_widget = SelectionGroupWidget(self.idd, self.times, "time", self)
         self.time_widget.clicked.connect(self.on_widget_interacted)
         grid_layout.addWidget(self.time_widget, 5, 0, 1, 2)
 
@@ -298,11 +297,12 @@ class SubscriptionOptionWidget(QFrame):
         else:
             self.deactivate_widget()
 
-    def get_result(self,result):
+    def get_result(self, result):
         if result is None:
             current_active_widget.price_label.setText(f"")
         else:
-            current_active_widget.price_label.setText(f"{float(result)-0.01}₽")
+            current_active_widget.price_label.setText(f"{float(result) - 0.01}₽")
+
     def deactivate_widget(self):
 
         self.on_widget_interacted(True)
@@ -313,15 +313,11 @@ class SubscriptionOptionWidget(QFrame):
         current_active_widget = self
         self.on_widget_interacted()
 
-
-
     def update_selected_options(self):
         self.selected_class_count = self.class_count_widget.selected_option
         self.selected_time = self.time_widget.selected_option
         self.calculate_price()
-        print(self.selected_class_count,self.selected_time)
-
-
+        print(self.selected_class_count, self.selected_time)
 
     # def calculate_price(self):
     #     """Пример расчета цены"""
@@ -338,7 +334,8 @@ class SubscriptionOptionWidget(QFrame):
     def calculate_price(self):
         """Пример расчета цены"""
         if current_active_widget is not None:
-            self.calculate_thread = WorkerThread(self.calculate_tariff_price, self.period, self.selected_class_count, self.selected_time, 150)
+            self.calculate_thread = WorkerThread(self.calculate_tariff_price, self.period, self.selected_class_count,
+                                                 self.selected_time, 150)
             self.calculate_thread.result_signal.connect(current_active_widget.get_result)
             self.calculate_thread.start()
         else:
@@ -363,7 +360,7 @@ class SubscriptionOptionWidget(QFrame):
             return False  # Возвращаем False, чтобы событие продолжало выполнение
         return super().eventFilter(object, event)
 
-    def on_widget_interacted(self,deactivate:bool = False):
+    def on_widget_interacted(self, deactivate: bool = False):
         """Обрабатывает взаимодействие с виджетом."""
         global current_active_widget
         if isinstance(deactivate, str):
@@ -373,7 +370,7 @@ class SubscriptionOptionWidget(QFrame):
 
             # Проверяем, если введены обе даты, то вычисляем одну из них, если вторая пустая
             if self.start_date_input.hasFocus():
-                print(self,33434)
+                print(self, 33434)
                 self.update_end_date(start_date_str)
             elif self.end_date_input.hasFocus():
                 self.update_start_date(end_date_str)
@@ -524,7 +521,7 @@ class SubscriptionOptionWidget(QFrame):
                                 border: 2px solid {color};
                                 }}
                         """
-            )
+        )
         self.class_count_widget.set_parent_active(True)
         self.time_widget.setStyleSheet(
             f"""
@@ -543,8 +540,6 @@ class SubscriptionOptionWidget(QFrame):
 
         # Обновляем текущий активный виджет
         current_active_widget = self
-
-
 
     def update_end_date(self, start_date_str):
         """Обновляем дату окончания на основе даты начала и выбранного периода."""
@@ -737,10 +732,13 @@ class SelectableLabel(QLabel):
 
 
 class SubscriptionWidget(QWidget):
+    confirmed = pyqtSignal(object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Добавление нового посетителя")
         self.setGeometry(300, 300, 426, 426)
+        self.confirmedd = False
         self.setWindowFlags(Qt.FramelessWindowHint)  # Remove window controls
         self.setAttribute(Qt.WA_TranslucentBackground)  # Transparent background
         self.setStyleSheet("""
@@ -793,22 +791,20 @@ class SubscriptionWidget(QWidget):
         # Сетка для вариантов подписки
         grid_layout = QGridLayout()
 
-        period = ["Месяц","Полгода","Год"]
+        period = ["Месяц", "Полгода", "Год"]
 
         classes = ["8", "12", "безлимит"]
         times = ["<16ч", ">16ч", "безлимит"]
-        prices = {"8-<16ч": 1000, "8->16ч": 1200, "12-<16ч": 1500, "12->16ч": 1800,
-                  "безлимит-<16ч": 3000}
-        half_year_widget0 = SubscriptionOptionWidget(period[0], classes, times, prices, 1)
-        half_year_widget1 = SubscriptionOptionWidget(period[1],[classes[2]], times, prices, 2)
-        half_year_widget2 = SubscriptionOptionWidget(period[2], [classes[2]], times, prices, 3)
+        half_year_widget0 = SubscriptionOptionWidget(period[0], classes, times, 1)
+        half_year_widget1 = SubscriptionOptionWidget(period[1], [classes[2]], times, 2)
+        half_year_widget2 = SubscriptionOptionWidget(period[2], [classes[2]], times, 3)
         grid_layout.addWidget(half_year_widget0, 0, 0)
         grid_layout.addWidget(half_year_widget1, 0, 1)
         grid_layout.addWidget(half_year_widget2, 0, 2)
 
         layout.addLayout(grid_layout)
 
-        confirm_button = HoverButton("Подтвердить",220,60,18,'#5DEBE6',False,'#5DEBE6','',18,'',10)
+        confirm_button = HoverButton("Подтвердить", 220, 60, 18, '#5DEBE6', False, '#5DEBE6', '', 18, '', 10)
         confirm_button.clicked.connect(self.on_confirm_button_click)
         layout.addWidget(confirm_button, alignment=Qt.AlignCenter)
 
@@ -905,8 +901,6 @@ class SubscriptionWidget(QWidget):
                                             font-size: 18px;
                                             }}""")
 
-
-
         # Проверка, что дата начала не позже даты конца
         if start_date_obj > end_date_obj:
             color = '#75A9A7' if current_active_widget.idd == 1 else '#D3D700' if current_active_widget.idd == 2 else '#5DEBE6'
@@ -949,8 +943,8 @@ class SubscriptionWidget(QWidget):
                                             font-size: 18px;
                                             }}""")
 
-
-        if current_active_widget is None or (current_active_widget.selected_class_count == None or current_active_widget.selected_time == None):
+        if current_active_widget is None or (
+                current_active_widget.selected_class_count == None or current_active_widget.selected_time == None):
             if current_active_widget.selected_time == None:
                 current_active_widget.time_widget.setStyleSheet(f"""
                 QFrame#bodyy_{current_active_widget.idd}{{
@@ -976,9 +970,43 @@ class SubscriptionWidget(QWidget):
             else:
                 return
 
+        try:
+            # Проверка, является ли абонемент действительным
+            is_valid = self.check_validity(start_date, end_date)
+            # Формируем данные абонемента
+            subscription_data = {
+                "tariff": calculator.generate_k_type(
+                    current_active_widget.period,
+                    current_active_widget.selected_class_count,
+                    current_active_widget.selected_time
+                ),
+                "start_date": start_date,
+                "end_date": end_date,
+                "price": current_active_widget.price_label.text(),
+                "count_of_visits": None if "безлимит" in current_active_widget.selected_class_count else int(
+                    current_active_widget.selected_class_count),
+                "is_valid": is_valid
+            }
 
+            self.confirmed.emit(subscription_data)
+            self.confirmedd = True
+            self.close()
+
+        except ValueError as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
 
         print("Все проверки пройдены, можно подтверждать.")
+
+    def check_validity(self, start_date, end_date):
+        """Проверяет, действителен ли абонемент."""
+        today = QDate.currentDate()
+        start_date_obj = QDate.fromString(start_date, "dd.MM.yyyy")
+        end_date_obj = QDate.fromString(end_date, "dd.MM.yyyy")
+
+        if not (start_date_obj.isValid() and end_date_obj.isValid()):
+            raise ValueError("Некорректный формат дат.")
+
+        return start_date_obj <= today <= end_date_obj
 
     def create_subscription_option(self, title: str, classes: list, times: list):
         widget = QWidget()
@@ -1037,8 +1065,13 @@ class SubscriptionWidget(QWidget):
             self.oldPos = event.globalPos()
 
     def closeEvent(self, event):
-        """Метод, вызываемый при закрытии виджета"""
+        """Обработчик закрытия окна."""
         global current_active_widget
-        print(current_active_widget.selected_class_count)
-        current_active_widget = None  # Сбрасываем глобальную переменную
 
+        # Проверяем, если окно было закрыто без подтверждения
+        # Отправляем сигнал с None, чтобы родительское окно могло обработать закрытие
+        if not self.confirmedd:
+            self.confirmed.emit(None)
+        # Сбрасываем текущий активный виджет
+        current_active_widget = None
+        super().closeEvent(event)

@@ -2,14 +2,15 @@ import calendar
 import datetime
 import locale
 import logging
+import threading
 from functools import partial
 
 from PyQt5 import QtWidgets, QtGui, QtCore, sip
 from PyQt5.QtChart import QChartView, QBarSeries, QBarSet, QChart, QBarCategoryAxis, QValueAxis
-from PyQt5.QtCore import QTimer, Qt, QMargins, pyqtSignal, QThread, QSize
+from PyQt5.QtCore import QTimer, Qt, QMargins, pyqtSignal, QThread, QSize, QTime
 from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, QStackedWidget, QGridLayout, \
-    QSizePolicy, QScrollArea, QMessageBox
+    QSizePolicy, QScrollArea, QMessageBox, QApplication
 
 from add_trainer_slot import AddSlotWindow
 from add_visitor_window import AddVisitorWindow
@@ -18,7 +19,7 @@ from constants import MAX_ACTIVE_THREADS
 from database import get_active_visitors, get_duty_trainers, count_visitors_in_gym, check_visitor_in_gym, \
     end_attendance, \
     start_attendance, execute_query, count_all_trainers, get_all_trainers, get_schedule_for_week
-from hover_button import HoverButton, TrainerButton
+from hover_button import HoverButton, TrainerButton, SvgHoverButton
 from search_client import ClientSearchWindow
 from utils import scan_card, WorkerThread, ResizablePhoto, FillPhoto
 from subscription import SubscriptionWidget, SelectionGroupWidget
@@ -30,6 +31,10 @@ class MainWindow(QWidget):
     def __init__(self, current_user_id):
         super().__init__()
         self.current_user_id = current_user_id
+        self.update_complete = threading.Event()
+        self.selected_client = None  # Данные о выбранном клиенте
+        self.subscription_data = None
+        self.from_add_client = False
         self.active_requests = {}
         self.active_threads = {}  # Словарь для хранения активных потоков
 
@@ -161,7 +166,7 @@ class MainWindow(QWidget):
 
     def show_add_visitor_window(self):
         if not hasattr(self, 'add_visitor_window') or not self.add_visitor_window.isVisible():
-            self.add_visitor_window = AddVisitorWindow()
+            self.add_visitor_window = AddVisitorWindow(main_window=self)
             self.add_visitor_window.show()
             self.add_visitor_window.raise_()
 
@@ -458,6 +463,9 @@ class MainWindow(QWidget):
                     name=trainer["name"],
                     image_path=trainer["image"]
                 )
+                trainer_widget.setFixedWidth(300)  # Ограничение ширины виджета
+                trainer_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
                 self.trainers_layout.addWidget(trainer_widget)
                 self.trainer_buttons.append(trainer_widget)
 
@@ -499,9 +507,11 @@ class MainWindow(QWidget):
 
         # Секция с тренерами
         self.trainers_layout = QHBoxLayout()
-        self.load_trainers()
-
+        self.trainers_layout.setContentsMargins(0, 0, 0, 0)  # Убираем внешние отступы
+        self.trainers_layout.setSpacing(10)  # Меньше пространство между тренерами
+        self.trainers_layout.setAlignment(Qt.AlignCenter)
         self.trainer_buttons = []
+        self.load_trainers()
 
         layout.addLayout(self.trainers_layout)
 
@@ -512,9 +522,10 @@ class MainWindow(QWidget):
         self.schedule_layout.setAlignment(Qt.AlignTop)
 
         # Навигация по месяцам
-        prev_month_button = QPushButton("<")
-        prev_month_button.setFixedSize(30, 30)
-        prev_month_button.clicked.connect(lambda: self.change_month(-1))
+
+        self.prev_month_button = SvgHoverButton("src/prev.svg", width=40, height=50, default_color='#75A9A7',
+                                           hover_color="#88F9F5")
+        self.prev_month_button.clicked.connect(lambda: self.change_month(-1,self.prev_month_button))
 
         self.month_label = QLabel()
         self.month_label.setObjectName('month')
@@ -530,16 +541,26 @@ class MainWindow(QWidget):
             }
             """
         )
+        self.month_label.setFixedWidth(300)
         self.month_label.setAlignment(Qt.AlignCenter)
 
-        next_month_button = QPushButton(">")
-        next_month_button.setFixedSize(30, 30)
-        next_month_button.clicked.connect(lambda: self.change_month(1))
+        self.next_month_button = SvgHoverButton("src/next.svg", width=40, height=50, default_color='#75A9A7',
+                                           hover_color="#88F9F5")
+
+        self.next_month_button.clicked.connect(lambda: self.change_month(1,self.next_month_button))
+
 
         month_navigation_layout = QHBoxLayout()
-        month_navigation_layout.addWidget(prev_month_button, alignment=Qt.AlignLeft)
-        month_navigation_layout.addWidget(self.month_label, alignment=Qt.AlignCenter)
-        month_navigation_layout.addWidget(next_month_button, alignment=Qt.AlignRight)
+        month_navigation_layout.setContentsMargins(0, 0, 0, 0)  # Убираем внешние отступы
+        month_navigation_layout.setSpacing(20)  # Устанавливаем небольшое расстояние между элементами
+
+        # Добавляем кнопки и метку последовательно без флагов выравнивания
+        month_navigation_layout.addWidget(self.prev_month_button)
+        month_navigation_layout.addWidget(self.month_label)
+        month_navigation_layout.addWidget(self.next_month_button)
+
+        # Устанавливаем выравнивание всего блока по центру
+        month_navigation_layout.setAlignment(Qt.AlignCenter)
 
         self.schedule_layout.addLayout(month_navigation_layout)
 
@@ -589,18 +610,32 @@ class MainWindow(QWidget):
         return 1
 
     def select_trainer(self, selected_button, trainer_id):
-        self.terminate_all_threads()
+        """
+        Обрабатывает выбор тренера и обновляет состояния кнопок.
+        :param selected_button: Кнопка выбранного тренера.
+        :param trainer_id: ID выбранного тренера.
+        """
 
+
+        # Обновление состояния кнопок
         self.selected_trainer_id = trainer_id
         for button in self.trainer_buttons:
             button.is_selected = button == selected_button
             button.update_styles()
 
+        # Загрузка расписания выбранного тренера
         self.show_schedule_for_trainer(trainer_id)
 
     def show_schedule_for_trainer(self, trainer_id):
+        """
+        Показывает расписание для выбранного тренера.
+        :param trainer_id: ID выбранного тренера.
+        """
+        # Установка видимости секции расписания
         self.schedule_group.setVisible(True)
         self.week_frame.setVisible(True)
+
+        # Обновление заголовка месяца
         self.update_month_label()
 
         # Загрузка недель и дней для выбранного тренера
@@ -614,10 +649,16 @@ class MainWindow(QWidget):
                                        border_width_selected=5, border_color_selected="#88F9F5"
                                        )
 
+        # Подключаем обработчик для выбора тренера
         trainer_button.clicked.connect(lambda: self.select_trainer(trainer_button, trainer_id))
         return trainer_button
 
     def update_weeks_and_days(self, trainer_id):
+        """
+        Обновляет кнопки недель и дни недели для выбранного тренера.
+        :param trainer_id: ID выбранного тренера.
+        """
+        # Получаем календарь для текущего месяца
         if not trainer_id:
             print("Ошибка: не выбран тренер.")
             return
@@ -643,7 +684,6 @@ class MainWindow(QWidget):
         """Обрабатывает выбор недели через SelectionGroupWidget."""
         selected_week = self.week_buttons_group.selected_option
         if selected_week:
-            self.terminate_all_threads()
             self.current_week = int(selected_week.split()[0])  # Сохраняем выбранную неделю
             self.update_days(self.current_week, self.selected_trainer_id)
 
@@ -657,28 +697,49 @@ class MainWindow(QWidget):
         days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 
         for i, day in enumerate(days):
-            day_widget = self.create_day_widget(day)
+            day_widget = self.create_day_widget(day, None)
             week_layout.addWidget(day_widget, 0, i)
 
         return week_frame
 
-    def create_day_widget(self, day_name, schedule_data=None, is_enabled=True):
+    def extract_slots_from_scroll_area(self, scroll_area):
         """
-        Создает виджет дня недели с прокручиваемой областью.
-        :param day_name: Название дня.
-        :param schedule_data: Список расписания для дня (слоты тренера).
-        :param is_enabled: Включен ли день (активный или прошедший).
+        Извлекает список слотов (временных интервалов) из `scroll_area`.
+        :param scroll_area: Объект QScrollArea, содержащий виджеты слотов.
+        :return: Список слотов в формате [(start_time, end_time), ...].
         """
-        # Если расписание отсутствует, создаем пустой список
+        container_widget = scroll_area
+        if not container_widget:
+            return []
+
+        container_layout = container_widget.layout()
+        slots = []
+        for i in range(container_layout.count()):
+            entry_widget = container_layout.itemAt(i).widget()
+            if entry_widget:
+                time_label = entry_widget.findChild(QLabel)
+                if time_label:
+                    try:
+                        start_time, end_time = map(
+                            lambda t: QTime.fromString(t.strip(), "hh:mm"),
+                            time_label.text().split('-')
+                        )
+                        if start_time.isValid() and end_time.isValid():
+                            slots.append((start_time, end_time))
+                    except ValueError:
+                        continue
+        return slots
+
+    def create_day_widget(self, day_name, day, schedule_data=None, is_enabled=True):
+
         schedule_data = schedule_data or []
 
-        # Основной фрейм дня
         day_frame = QFrame()
         day_frame.setObjectName('day_f')
         day_frame.setFixedWidth(160)
         day_frame.setFixedHeight(250)
 
-        # Стили для активных и неактивных дней
+
         if is_enabled:
             day_frame.setStyleSheet("""
                 QFrame#day_f {
@@ -700,13 +761,11 @@ class MainWindow(QWidget):
                 }
             """)
 
-        # Макет основного фрейма
         day_layout = QVBoxLayout(day_frame)
         day_layout.setAlignment(Qt.AlignTop)
         day_layout.setContentsMargins(0, 0, 0, 0)
         day_layout.setSpacing(0)
 
-        # Название дня
         day_label = QLabel(day_name)
         day_label.setObjectName('day_l')
         day_label.setWordWrap(True)
@@ -726,7 +785,6 @@ class MainWindow(QWidget):
         """)
         day_layout.addWidget(day_label)
 
-        # Прокручиваемая область
         scroll_area = QScrollArea()
         scroll_area.setFixedWidth(day_frame.width() - 4)
         scroll_area.setWidgetResizable(True)
@@ -737,7 +795,7 @@ class MainWindow(QWidget):
                 padding: 0px;
                 margin: 0px;
                 border: 0px;
-                background-color: {'white' if is_enabled else '#d3d3d3'};
+                background-color: {'white' if is_enabled else 'transparent'};
             }}
             QScrollBar:vertical {{
                 width: 8px;
@@ -757,7 +815,6 @@ class MainWindow(QWidget):
             }}
         """)
 
-        # Контейнер для элементов внутри прокручиваемой области
         container_widget = QWidget()
         container_widget.setObjectName('scroll_content')
         container_widget.setStyleSheet("border: 0px; padding: 0px; margin: 0px;")
@@ -766,15 +823,12 @@ class MainWindow(QWidget):
         container_layout.setSpacing(10)
         container_layout.setContentsMargins(0, 0, 5, 5)
 
-        # Добавляем записи расписания
         for item in schedule_data:
-            # Контейнер для одной записи
             entry_widget = QWidget()
             entry_layout = QVBoxLayout(entry_widget)
             entry_layout.setContentsMargins(0, 0, 0, 0)
             entry_layout.setSpacing(2)
 
-            # Время
             time_label = QLabel(item['time'])
             time_label.setAlignment(Qt.AlignCenter)
             time_label.setStyleSheet(f"""
@@ -787,7 +841,6 @@ class MainWindow(QWidget):
             """)
             entry_layout.addWidget(time_label)
 
-            # Клиент
             client_label = QLabel(item['client'])
             client_label.setAlignment(Qt.AlignCenter)
             client_label.setWordWrap(True)
@@ -802,39 +855,46 @@ class MainWindow(QWidget):
 
             container_layout.addWidget(entry_widget, alignment=Qt.AlignTop | Qt.AlignHCenter)
 
-        # Кнопка добавления слота
-        add_button = HoverButton("+", 30, 30, 30, '#75A9A7', True, '', '', 5, '#5DEBE6')
-        add_button.clicked.connect(self.open_add_slot_window)
+        add_button = HoverButton("+", 30, 30, 40, '#75A9A7', True, '', '', 5, '#5DEBE6', 10)
+        add_button.setFixedHeight(40)
+
+
 
         if not is_enabled:
-            print(day_name)
             add_button.disable_button()
 
         container_layout.addWidget(add_button, alignment=Qt.AlignCenter)
+        add_button.clicked.connect(lambda: self.open_add_slot_window(container_layout, day))
 
         container_widget.setLayout(container_layout)
         scroll_area.setWidget(container_widget)
 
-        # Добавляем прокручиваемую область в макет дня
         day_layout.addWidget(scroll_area)
 
         return day_frame
 
-    def open_add_slot_window(self):
-        self.add_slot_window = AddSlotWindow()
-        self.add_slot_window.slot_added.connect(self.display_added_slot)
+    def open_add_slot_window(self, scroll_area, day):
+
+        existing_slots = self.extract_slots_from_scroll_area(scroll_area)
+        self.add_slot_window = AddSlotWindow(
+            selected_client=self.selected_client,
+            subscription_data=self.subscription_data,
+            existing_slots=existing_slots,
+            selected_date=day
+        )
         self.add_slot_window.show()
 
     def display_added_slot(self, slot_data):
         print(f"Добавленный слот: {slot_data}")
 
-    def change_month(self, delta):
+    def change_month(self, delta, button):
         """Изменяет текущий месяц и сохраняет выбранную неделю."""
         # Сохраняем количество недель в текущем месяце перед переключением
-        self.terminate_all_threads()
+
 
         month_calendar = calendar.monthcalendar(self.current_date.year, self.current_date.month)
         self.previous_total_weeks = len(month_calendar)
+
 
         # Обновляем текущий месяц
         year = self.current_date.year
@@ -852,6 +912,8 @@ class MainWindow(QWidget):
         self.update_month_label()
         self.update_weeks_and_days(self.selected_trainer_id)
 
+
+
     def update_month_label(self):
         """Обновляет текст заголовка месяца на русском языке, добавляя год только при необходимости."""
         current_year = datetime.date.today().year
@@ -860,6 +922,38 @@ class MainWindow(QWidget):
             self.month_label.setText(f"{month_name} {self.current_date.year}")
         else:
             self.month_label.setText(month_name)
+
+    # def update_existing_week_widgets(self):
+    #     """
+    #     Обновляет текущие виджеты недели, учитывая диапазон подписки.
+    #     """
+    #     today = datetime.date.today()
+    #
+    #     # Проверяем наличие подписки
+    #     subscription_start = None
+    #     subscription_end = None
+    #     if self.subscription_data:
+    #         try:
+    #             subscription_start = datetime.datetime.strptime(self.subscription_data.get("start_date", ""),
+    #                                                             "%d.%m.%Y").date()
+    #             subscription_end = datetime.datetime.strptime(self.subscription_data.get("end_date", ""),
+    #                                                           "%d.%m.%Y").date()
+    #         except ValueError:
+    #             print("Ошибка формата дат в подписке. Подписка будет игнорироваться.")
+    #             subscription_start, subscription_end = None, None
+    #
+    #     for day_date, day_widget in self.day_widgets.items():
+    #         if subscription_start and subscription_end:
+    #             is_enabled = subscription_start <= day_date <= subscription_end and day_date >= today
+    #         else:
+    #             is_enabled = day_date >= today  # Если подписки нет, только будущее
+    #
+    #         # Если текущая неделя выходит за пределы подписки, делаем дни неактивными
+    #         if subscription_start and subscription_end and (
+    #                 day_date < subscription_start or day_date > subscription_end):
+    #             is_enabled = False
+    #
+    #         self.update_day_widget(day_widget, [], is_enabled)
 
     def update_days(self, week_number, trainer_id):
         """
@@ -886,6 +980,14 @@ class MainWindow(QWidget):
         start_date = None  # Начальная дата недели
         end_date = None  # Конечная дата недели
 
+        subscription_start = None
+        subscription_end = None
+
+        if self.subscription_data:
+            subscription_start = datetime.datetime.strptime(self.subscription_data.get("start_date", ""),
+                                                            "%d.%m.%Y").date()
+            subscription_end = datetime.datetime.strptime(self.subscription_data.get("end_date", ""), "%d.%m.%Y").date()
+
         for i, day in enumerate(days):
             if days_in_week[i] == 0:  # День не относится к текущему месяцу
                 day_widget = self.create_day_widget(day, [], is_enabled=False)
@@ -898,28 +1000,35 @@ class MainWindow(QWidget):
 
                 end_date = day_date  # Последняя валидная дата недели
 
-                if day_date < today:  # День прошел
-                    day_widget = self.create_day_widget(day, [], is_enabled=False)
-                    buffer_layout.addWidget(day_widget, 0, i)
-                    self.day_widgets[day_date] = day_widget  # Добавьте эту строку
+                # Проверка, активен ли день: если день в пределах абонемента, либо в будущем
+                is_enabled = (
+                                     (
+                                                 subscription_start and subscription_end and subscription_start <= day_date <= subscription_end)
+                                     or (subscription_start is None and subscription_end is None)
+                             ) and day_date >= today
 
-                else:
-                    # Создание виджета для дня (без данных)
-                    day_widget = self.create_day_widget(day, [], is_enabled=True)
-                    buffer_layout.addWidget(day_widget, 0, i)
+                # Создание виджета дня с учетом активности
 
-                    # Сохранение виджета в словарь
-                    self.day_widgets[day_date] = day_widget
 
-        if start_date and end_date:
+                day_widget = self.create_day_widget(day, day_date,[], is_enabled=is_enabled)
+                buffer_layout.addWidget(day_widget, 0, i)
 
+                # Сохраняем виджет в словарь для дальнейшего использования
+                self.day_widgets[day_date] = day_widget
+
+        if start_date and end_date:  # Если даты корректны
+            # Загрузка данных для всей недели
             self.load_schedule_for_week(trainer_id, start_date, end_date)
 
-
+        # После завершения обновления заменяем текущий макет на буферный
         self.replace_week_layout(buffer_layout)
 
     def replace_week_layout(self, new_layout):
-
+        """
+        Заменяет текущий макет недели на новый буферный макет.
+        :param new_layout: Новый макет для замены.
+        """
+        # Удаляем старый макет
         old_layout = self.week_frame.layout()
         if old_layout is not None:
             while old_layout.count():
@@ -928,26 +1037,48 @@ class MainWindow(QWidget):
                 if widget:
                     widget.deleteLater()
 
-            QWidget().setLayout(old_layout)
+            QWidget().setLayout(old_layout)  # Освобождаем память
 
         # Устанавливаем новый макет
         self.week_frame.setLayout(new_layout)
 
     def update_schedule_ui(self, schedule_data):
-
+        """
+        Обновляет UI с расписанием тренера за неделю.
+        :param schedule_data: Расписание тренера, сгруппированное по дням.
+        """
         if not schedule_data:
             print("Ошибка: пустое расписание для обновления UI.")
             return
 
-        today = datetime.date.today()
+        today = datetime.date.today()  # Получаем текущую дату
 
         for day_date, slots in schedule_data.items():
             if day_date in self.day_widgets:
                 print(f"Обновляем виджет для даты: {day_date}, слотов: {len(slots)}")
                 day_widget = self.day_widgets[day_date]
 
-                is_enabled = day_date >= today
-                self.update_day_widget(day_widget, slots, is_enabled)  # Передаём is_enabled
+                # Определяем, активен день или нет
+                if self.subscription_data:
+                    subscription_start = datetime.datetime.strptime(self.subscription_data.get("start_date", ""),
+                                                                    "%d.%m.%Y").date()
+                    subscription_end = datetime.datetime.strptime(self.subscription_data.get("end_date", ""),
+                                                                  "%d.%m.%Y").date()
+
+                    if subscription_start and subscription_end:
+                        try:
+
+                            is_enabled = subscription_start <= day_date <= subscription_end and today <= day_date
+                        except ValueError as e:
+                            print(f"Ошибка при преобразовании даты абонемента: {e}")
+                            is_enabled = False  # Если ошибка преобразования, считаем день неактивным
+                    else:
+                        print("Данные абонемента клиента отсутствуют.")
+                        is_enabled = False  # Если данных абонемента нет, день считается неактивным
+                else:
+                    is_enabled = today <= day_date
+
+                self.update_day_widget(day_widget, slots, is_enabled, day_date)  # Передаём is_enabled
             else:
                 print(f"Ошибка: виджет для {day_date} не найден.")
 
@@ -955,49 +1086,62 @@ class MainWindow(QWidget):
         """
         Завершает все активные потоки.
         """
+
         for cache_key, worker in self.active_threads.items():
             logger.info(f"Завершение потока: {id(worker)} для {cache_key}")
             worker.terminate()
         self.active_threads.clear()
 
     def load_schedule_for_week(self, trainer_id, start_date, end_date):
+        """
+        Загружает расписание для тренера за неделю.
+        """
+        if hasattr(self, "is_loading_week") and self.is_loading_week:
+            logger.info("Запрос расписания уже выполняется. Ожидание завершения.")
+            return
+
+        self.is_loading_week = True  # Устанавливаем флаг выполнения
 
         cache_key = (trainer_id, start_date, end_date)
 
-        # завершаем предыдущий поток
-        if cache_key in self.active_threads:
-            old_worker = self.active_threads.pop(cache_key)
-            old_worker.terminate()
-            logger.info(f"Старый поток завершён: {id(old_worker)} для {cache_key}")
-
-        # проверяем кеш
+        # Проверяем кеш
         if cache_key in self.schedule_cache:
             self.update_schedule_ui(self.schedule_cache[cache_key])
+            self.is_loading_week = False  # Сбрасываем флаг выполнения
             return
 
-        # обработчик результата
+        # Обработчик результата
         def handle_result(schedule_data):
-            if schedule_data is None:
-                logger.warning(f"Ошибка: пустое расписание для {cache_key}.")
-                return
+            try:
+                if not schedule_data:
+                    logger.warning(f"Пустое расписание для {cache_key}.")
+                else:
+                    self.schedule_cache[cache_key] = schedule_data
+                    self.update_schedule_ui(schedule_data)
+            except Exception as e:
+                logger.error(f"Ошибка в обработчике результата: {e}")
+            finally:
+                self.is_loading_week = False  # Сбрасываем флаг выполнения в любом случае
+                logger.info(f"Флаг is_loading_week сброшен для {cache_key}")
 
+        def handle_error(error_message):
+            logger.error(f"Ошибка в потоке загрузки расписания: {error_message}")
+            self.is_loading_week = False  # Сбрасываем флаг выполнения
+            logger.info(f"Флаг is_loading_week сброшен после ошибки для {cache_key}")
 
-            self.schedule_cache[cache_key] = schedule_data
-
-            self.update_schedule_ui(schedule_data)
-
-            self.active_threads.pop(cache_key, None)
-
-
+        # Создаём поток и логируем его создание
         worker = WorkerThread(get_schedule_for_week, trainer_id, start_date, end_date)
         logger.info(f"Создан поток: {id(worker)} для {cache_key}")
 
-        # обработчики сигналов
+        # Подключаем обработчики сигналов
         worker.result_signal.connect(handle_result)
+        worker.error_signal.connect(handle_error)
         worker.finished_signal.connect(lambda: logger.info(f"Поток завершён: {id(worker)}"))
         worker.finished_signal.connect(lambda: self.active_threads.pop(cache_key, None))
 
-        # запуск потока
+        worker.finished_signal.connect(lambda: setattr(self, "is_loading_week", False))  # Сбрасываем флаг выполнения
+
+        # Запускаем поток
         worker.start()
 
         # Сохраняем поток в активные запросы
@@ -1019,9 +1163,14 @@ class MainWindow(QWidget):
         result = execute_query(query, (trainer_id, day_date))
         return result[0][0] if result else None
 
-    def update_day_widget(self, day_widget, schedule_data, is_enabled):
-
-        # существует ли виджет
+    def update_day_widget(self, day_widget, schedule_data, is_enabled, day):
+        """
+        Обновляет содержимое существующего виджета дня.
+        :param day_widget: Виджет дня, который нужно обновить.
+        :param schedule_data: Данные расписания для обновления (список слотов).
+        :param is_enabled: Включен ли день (активный или прошедший).
+        """
+        # Проверяем, существует ли виджет
         if day_widget is None or sip.isdeleted(day_widget):
             print(f"Ошибка: виджет дня {day_widget} не найден или был удален.")
             return
@@ -1040,9 +1189,11 @@ class MainWindow(QWidget):
             if widget:
                 widget.deleteLater()
 
+        # Проверяем данные для обновления
         if not schedule_data:
             print("Данные расписания пусты. Добавляем только кнопку '+'.")
         else:
+            # Добавление новых записей из schedule_data
             for item in schedule_data:
                 print(f"Добавляем запись: {item}")
                 # Контейнер для одной записи
@@ -1068,6 +1219,7 @@ class MainWindow(QWidget):
                 client_label = QLabel(item['client'])
                 client_label.setAlignment(Qt.AlignCenter)
                 client_label.setWordWrap(True)
+                client_label.setFixedWidth(131)
                 client_label.setStyleSheet("""
                     QLabel {
                         font-family: 'Unbounded';
@@ -1076,11 +1228,14 @@ class MainWindow(QWidget):
                     }
                 """)
                 entry_layout.addWidget(client_label)
+
+                # Добавляем запись в контейнер
                 container_layout.addWidget(entry_widget, alignment=Qt.AlignTop | Qt.AlignHCenter)
 
+        # Добавление кнопки "+" для добавления новых слотов
         print("Добавляем кнопку '+'")
-        add_button = HoverButton("+", 30, 30, 30, '#75A9A7', True, '', '', 5, '#5DEBE6')
-        add_button.clicked.connect(self.open_add_slot_window)
+        add_button = HoverButton("+", 30, 30, 40, '#75A9A7', True, '', '', 5, '#5DEBE6')
+        add_button.clicked.connect(lambda: self.open_add_slot_window(container_layout, day))
 
         if not is_enabled:
             add_button.disable_button()
@@ -1089,15 +1244,20 @@ class MainWindow(QWidget):
 
         print("Обновление виджета завершено.")
 
-
     def switch_to_page(self, page):
-        self.terminate_all_threads()
+        if self.schedule_group.isVisible() and self.week_frame.isVisible() and self.from_add_client:
+            self.from_add_client = False
+        elif self.schedule_group.isVisible() and self.week_frame.isVisible() and not self.from_add_client:
+            self.selected_client = None
+            self.subscription_data = None
+            self.from_add_client = False
+            self.update_days(self.current_week, self.selected_trainer_id)
+        elif self.from_add_client:
+            self.from_add_client = False
+        QApplication.processEvents()
         self.stack.setCurrentWidget(page)
+
 
     def closeEvent(self, event):
         self.terminate_all_threads()
         event.accept()
-
-
-
-

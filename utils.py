@@ -41,33 +41,29 @@ logger = logging.getLogger(__name__)
 
 class WorkerThread(QThread):
     result_signal = pyqtSignal(object)  # Сигнал для передачи результата
-    error_signal = pyqtSignal(str)      # Сигнал для передачи сообщений об ошибке
-    finished_signal = pyqtSignal()      # Сигнал для уведомления о завершении
+    error_signal = pyqtSignal(str)     # Сигнал для передачи ошибок
+    finished_signal = pyqtSignal()     # Сигнал для завершения потока
 
     def __init__(self, func, *args, **kwargs):
         super().__init__()
         self.func = func
         self.args = args
         self.kwargs = kwargs
-        self.is_running = True  # Флаг для управления завершением потока
+        self._stop_requested = False  # Флаг для остановки потока
 
     def run(self):
         try:
-            if self.is_running:  # Проверяем, активен ли поток
+            if not self._stop_requested:  # Проверяем, остановлен ли поток
                 result = self.func(*self.args, **self.kwargs)
                 self.result_signal.emit(result)  # Отправляем результат
         except Exception as e:
-            error_message = f"Ошибка в WorkerThread: {e}"
-            logger.error(error_message)
-            traceback.print_exc()
-            self.error_signal.emit(error_message)  # Отправляем сообщение об ошибке
+            self.error_signal.emit(str(e))  # Отправляем сообщение об ошибке
         finally:
             self.finished_signal.emit()  # Сигнал о завершении потока
 
-    def terminate(self):
-        """Безопасное завершение потока."""
-        self.is_running = False
-        super().terminate()
+    def stop(self):
+        self._stop_requested = True
+
 
 
 
@@ -191,26 +187,17 @@ class ResizablePhoto(QLabel):
         super().resizeEvent(event)
 
 # Пример использования
-
 class TariffCalculator:
     def __init__(self):
-        self.settings = QSettings("fdfdfdsdddf", "fefsdsdsddfdf")
-        self.tariffs = self.load_tariffs()
-
-    def load_tariffs(self):
-        """Загружаем тарифы из базы данных или из кэша."""
-        tariffs = self.settings.value("tariffs", None)
-        if tariffs is None:
-            return self.load_tariffs_from_db()  # Синхронная загрузка тарифов
-        else:
-            return tariffs
+        # Убираем QSettings, чтобы не использовать кэширование
+        self.tariffs = self.load_tariffs_from_db()
 
     def load_tariffs_from_db(self):
         """Загружаем тарифы из базы данных."""
         tariffs = {}
         query = "SELECT k_type, k_time, k_period_or_n FROM tariff"
 
-        # Подключаемся к базе данных здесь
+        # Подключаемся к базе данных
         connection = connect_to_db()
         cursor = connection.cursor()
         cursor.execute(query)
@@ -224,10 +211,6 @@ class TariffCalculator:
         cursor.close()
         connection.close()
 
-        # Кэшируем тарифы в QSettings
-        self.settings.setValue("tariffs", tariffs)
-        print(444444,tariffs)
-
         return tariffs
 
     def calculate_price(self, period, k_class, k_time, base_price):
@@ -235,6 +218,7 @@ class TariffCalculator:
         # Формируем ключ для тарифа в зависимости от выбранных опций
         k_type = self.generate_k_type(period, k_class, k_time)
 
+        # Используем тарифы, загруженные из базы
         tariff = self.tariffs.get(k_type)
         if tariff:
             price = base_price * tariff['k_time'] * tariff['k_period_or_n']
@@ -246,7 +230,7 @@ class TariffCalculator:
         """Генерируем ключ для тарифа на основе выбранных опций."""
         period_map = {"Месяц": "mnth", "Полгода": "hyr", "Год": "yr"}
         class_map = {"8": "8", "12": "12", "безлимит": "unlim"}
-        time_map = {"<16ч": "evn", ">16ч": "mrn", "безлимит": "unlim"}
+        time_map = {"<16ч": "mrn", ">16ч": "evn", "безлимит": "unlim"}
 
         period_key = period_map.get(period)
         class_key = class_map.get(k_class)
@@ -257,6 +241,71 @@ class TariffCalculator:
         else:
             raise ValueError("Неверные параметры для тарифа.")
 
+# class TariffCalculator:
+#     def __init__(self):
+#         self.settings = QSettings("fdfdfdsdddf", "fefsdsdsddfdf")
+#         self.tariffs = self.load_tariffs()
+#
+#     def load_tariffs(self):
+#         """Загружаем тарифы из базы данных или из кэша."""
+#         tariffs = self.settings.value("tariffs", None)
+#         if tariffs is None:
+#             return self.load_tariffs_from_db()  # Синхронная загрузка тарифов
+#         else:
+#             return tariffs
+#
+#     def load_tariffs_from_db(self):
+#         """Загружаем тарифы из базы данных."""
+#         tariffs = {}
+#         query = "SELECT k_type, k_time, k_period_or_n FROM tariff"
+#
+#         # Подключаемся к базе данных здесь
+#         connection = connect_to_db()
+#         cursor = connection.cursor()
+#         cursor.execute(query)
+#         rows = cursor.fetchall()
+#
+#         for row in rows:
+#             k_type, k_time, k_period_or_n = row
+#             tariffs[k_type] = {'k_time': k_time, 'k_period_or_n': k_period_or_n}
+#
+#         # Закрываем соединение с БД
+#         cursor.close()
+#         connection.close()
+#
+#         # Кэшируем тарифы в QSettings
+#         self.settings.setValue("tariffs", tariffs)
+#         print(444444,tariffs)
+#
+#         return tariffs
+#
+#     def calculate_price(self, period, k_class, k_time, base_price):
+#         """Расчет цены с использованием выбранных опций."""
+#         # Формируем ключ для тарифа в зависимости от выбранных опций
+#         k_type = self.generate_k_type(period, k_class, k_time)
+#
+#         tariff = self.tariffs.get(k_type)
+#         if tariff:
+#             price = base_price * tariff['k_time'] * tariff['k_period_or_n']
+#             return price
+#         else:
+#             raise ValueError(f"Тариф {k_type} не найден")
+#
+#     def generate_k_type(self, period, k_class, k_time):
+#         """Генерируем ключ для тарифа на основе выбранных опций."""
+#         period_map = {"Месяц": "mnth", "Полгода": "hyr", "Год": "yr"}
+#         class_map = {"8": "8", "12": "12", "безлимит": "unlim"}
+#         time_map = {"<16ч": "mrn", ">16ч": "evn", "безлимит": "unlim"}
+#
+#         period_key = period_map.get(period)
+#         class_key = class_map.get(k_class)
+#         time_key = time_map.get(k_time)
+#
+#         if period_key and class_key and time_key:
+#             return f"{class_key}_{time_key}_{period_key}"
+#         else:
+#             raise ValueError("Неверные параметры для тарифа.")
+#
 
 def format_datetime(date_obj):
     """Форматирует объект даты в строку 'ДД.ММ.ГГ'"""

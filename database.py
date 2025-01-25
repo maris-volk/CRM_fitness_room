@@ -2,6 +2,7 @@ import datetime
 import hashlib
 import logging
 import random
+import re
 import sys
 import traceback
 from collections import OrderedDict
@@ -39,29 +40,36 @@ connection_pool = psycopg2.pool.ThreadedConnectionPool(
     database='2024_psql_miros'
 )
 
+def log_connection_pool_status():
+    try:
+        logger.info(f"Пул соединений: минимальное={connection_pool.minconn}, максимальное={connection_pool.maxconn}")
+    except Exception as e:
+        logger.error(f"Ошибка проверки состояния пула: {e}")
+
 
 def execute_query(query, params=None, fetch=True):
-    """
-    Выполняет SQL-запрос и возвращает результат.
-    Если fetch=False, выполняет только запрос (например, INSERT, UPDATE).
-    """
     conn = None
     try:
         conn = connection_pool.getconn()
+        logger.info(f"Получено соединение из пула: {id(conn)}")
         with conn.cursor() as cursor:
+            logger.info(f"Выполнение запроса: {query} с параметрами {params}")
             cursor.execute(query, params)
+            conn.commit()
             if fetch:
                 result = cursor.fetchall()
+                logger.info(f"Получено {len(result)} записей")
                 return result
-            else:
-                conn.commit()
-                return True
     except Exception as e:
+        if conn:
+            conn.rollback()
         logger.error(f"Ошибка выполнения запроса: {e}")
         return None
     finally:
         if conn:
-            connection_pool.putconn(conn)  # Возвращаем соединение в пул
+            connection_pool.putconn(conn)
+            logger.info(f"Соединение возвращено в пул: {id(conn)}")
+
 
 
 def count_all_trainers():
@@ -86,11 +94,8 @@ def count_all_trainers():
 def get_schedule_for_week(trainer_id, start_date, end_date):
     """
     Получает расписание тренера за неделю.
-    :param trainer_id: ID тренера.
-    :param start_date: Начальная дата (первая дата недели).
-    :param end_date: Конечная дата (последняя дата недели).
-    :return: Словарь с данными расписания по дням.
     """
+    logger.info(f"Запрос расписания для тренера {trainer_id}: {start_date} - {end_date}")
     query = """
         SELECT 
             ts.start_time::date AS day_date,
@@ -105,6 +110,7 @@ def get_schedule_for_week(trainer_id, start_date, end_date):
             ts.trainer = %s AND ts.start_time::date BETWEEN %s AND %s;
     """
     result = execute_query(query, (trainer_id, start_date, end_date))
+    logger.info(f"Получено {len(result) if result else 0} записей для тренера {trainer_id}")
     if result:
         schedule_by_day = {}
         for row in result:
@@ -116,9 +122,114 @@ def get_schedule_for_week(trainer_id, start_date, end_date):
                 "end_time": row[2],
                 "client": row[3]
             })
-        print(schedule_by_day)
         return schedule_by_day
     return {}
+
+
+
+def check_phone_in_database(phone_number):
+    """
+    Проверяет, существует ли клиент с данным номером телефона.
+    """
+    query = "SELECT client_id FROM client WHERE phone_number = %s;"
+    result = execute_query(query, (phone_number,))
+    return result[0][0] if result else None
+
+
+def add_user_to_db(surname, first_name, patronymic, phone_number):
+    """
+    Добавляет нового пользователя в базу данных без абонемента.
+    """
+    current_date = datetime.date.today()  # Получаем текущую дату
+    query = """
+        INSERT INTO client (surname, first_name, patronymic, phone_number, subscription, membership_start_date)
+        VALUES (%s, %s, %s, %s, null, %s)
+        RETURNING client_id;
+    """
+    params = (surname, first_name, patronymic or None, phone_number, current_date)
+    try:
+        result = execute_query(query, params, fetch=True)
+        if result:
+            logger.info(f"Пользователь {first_name} {surname} добавлен с ID {result[0][0]}.")
+            return result[0][0]  # Возвращаем ID добавленного клиента
+        else:
+            logger.error("Не удалось добавить пользователя.")
+            return None
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении пользователя: {e}, Query: {query}, Params: {params}")
+        return None
+
+def add_subscription_to_existing_user(user_id, subscription_data):
+    from datetime import datetime
+    import re
+    """
+    Добавляет абонемент в базу данных и привязывает его к существующему пользователю.
+    """
+    try:
+        # Добавляем абонемент
+        start_date_raw = subscription_data.get("start_date")
+        if not start_date_raw:
+            raise ValueError("Дата начала (start_date) отсутствует в данных абонемента.")
+        valid_since = datetime.strptime(start_date_raw, "%d.%m.%Y").strftime("%Y-%m-%d")
+
+        valid_until = datetime.strptime(subscription_data["end_date"], "%d.%m.%Y").strftime("%Y-%m-%d")
+        price_raw = subscription_data.get("price")
+        if isinstance(price_raw, str) and "₽" in price_raw:
+            price = float(price_raw.replace("₽", "").strip())
+        else:
+            price = float(price_raw)  # Если это уже число
+        query_subscription = """
+            INSERT INTO public.subscription (tariff, valid_since, valid_until, is_valid, price, count_of_visits)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING subscription_id;
+        """
+        params_subscription = (
+            subscription_data["tariff"],
+            valid_since,
+            valid_until,
+            subscription_data["is_valid"],
+            price,
+            subscription_data["count_of_visits"]
+        )
+        result = execute_query(query_subscription, params_subscription, fetch=True)
+        if not result:
+            logger.error("Не удалось добавить абонемент.")
+            return None
+
+        subscription_id = result[0][0]
+        logger.info(f"Абонемент добавлен с ID {subscription_id}.")
+
+        # Привязываем абонемент к пользователю
+        query_update_user = """
+            UPDATE public.client
+            SET subscription = %s
+            WHERE client_id = %s;
+        """
+        params_update_user = (subscription_id, user_id)
+        execute_query(query_update_user, params_update_user, fetch=False)
+        logger.info(f"Абонемент с ID {subscription_id} привязан к клиенту с ID {user_id}.")
+        return subscription_id
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении абонемента: {e}")
+        return None
+
+
+
+def add_user_with_subscription(first_name, last_name, patronymic, phone_number, subscription_data):
+    """
+    Добавляет нового пользователя с абонементом.
+    """
+    user_id = add_user_to_db(first_name, last_name, patronymic, phone_number)
+    if user_id:
+        subscription_id = add_subscription_to_existing_user(user_id, subscription_data)
+        if subscription_id:
+            logger.info(f"Пользователь {first_name} {last_name} успешно добавлен с абонементом.")
+        else:
+            logger.error(f"Не удалось добавить абонемент для пользователя {first_name} {last_name}.")
+    else:
+        logger.error(f"Не удалось добавить пользователя {first_name} {last_name}.")
+
+
 
 def get_schedule_data_with_hash(trainer_id, start_date, end_date):
     """
@@ -187,7 +298,7 @@ def get_all_trainers():
             for row in result:
                 trainers.append({
                     "id": row[0],
-                    "name": f"{row[1]} {row[2]}",
+                    "name": f"{row[1]}",
                     "image": row[3]  # Байтовое изображение
                 })
             print(f"get_all_trainers: список тренеров - {trainers}")

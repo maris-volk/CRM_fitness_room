@@ -171,7 +171,7 @@ class ClientSearchWindow(QWidget):
             }
             QScrollBar:vertical {
                 width: 8px;
-                background: #75A9A7;
+                background: white;
             }
             QScrollBar::handle:vertical {
                 background: #5DEBE6;
@@ -232,26 +232,40 @@ class ClientSearchWindow(QWidget):
         def fetch_clients():
             print('b')
             query = """
-                SELECT c.client_id, 
-                       c.surname || ' ' || c.first_name AS name, 
-                       c.phone_number AS phone, 
-                       CASE 
-                           WHEN s.is_valid = TRUE THEN 
-                               'Абонемент ' || TO_CHAR(s.valid_since, 'DD.MM.YY') || ' - ' || TO_CHAR(s.valid_until, 'DD.MM.YY')
-                           ELSE 'Абонемент отсутствует'
-                       END AS subscription,
-                       COALESCE(t.surname || ' ' || t.first_name, 'Нет закрепленных тренеров') AS trainer,
-                       TO_CHAR(c.membership_start_date, 'DD.MM.YY') AS start_date,
-                       CASE 
-                           WHEN v.in_gym = TRUE THEN '● В зале'
-                           ELSE '○ Вне зала'
-                       END AS status
-                FROM client c
-                LEFT JOIN subscription s ON c.subscription = s.subscription_id
-                LEFT JOIN training_slots ts ON c.client_id = ts.client
-                LEFT JOIN trainer t ON ts.trainer = t.trainer_id
-                LEFT JOIN visit_fitness_room v ON c.client_id = v.client
-                ORDER BY c.membership_start_date DESC;
+            WITH nearest_slots AS (
+                SELECT DISTINCT ON (ts.client) 
+                       ts.client,
+                       ts.start_time AS nearest_slot_start,
+                       ts.end_time AS nearest_slot_end,
+                       ts.trainer
+                FROM training_slots ts
+                WHERE ts.start_time >= NOW()
+                ORDER BY ts.client, ts.start_time ASC
+            )
+            SELECT 
+                   c.client_id, 
+                   c.surname || ' ' || c.first_name AS name, 
+                   c.phone_number AS phone, 
+                   CASE 
+                       WHEN s.is_valid = TRUE THEN 
+                           'Абонемент ' || TO_CHAR(s.valid_since, 'DD.MM.YY') || ' - ' || TO_CHAR(s.valid_until, 'DD.MM.YY')
+                       ELSE 'Абонемент отсутствует'
+                   END AS subscription,
+                   COALESCE(t.surname || ' ' || t.first_name, 'Нет закрепленных тренеров') AS trainer,
+                   TO_CHAR(c.membership_start_date, 'DD.MM.YY') AS start_date,
+                   CASE 
+                       WHEN v.in_gym = TRUE THEN '● В зале'
+                       ELSE '○ Вне зала'
+                   END AS status,
+                   COALESCE(TO_CHAR(ns.nearest_slot_start, 'DD.MM.YYYY HH24:MI'), 'Нет ближайших слотов') AS nearest_slot_start,
+                   COALESCE(TO_CHAR(ns.nearest_slot_end, 'DD.MM.YYYY HH24:MI'), '') AS nearest_slot_end
+            FROM client c
+            LEFT JOIN subscription s ON c.subscription = s.subscription_id
+            LEFT JOIN nearest_slots ns ON c.client_id = ns.client
+            LEFT JOIN trainer t ON ns.trainer = t.trainer_id
+            LEFT JOIN visit_fitness_room v ON c.client_id = v.client
+            ORDER BY c.membership_start_date DESC;
+
             """
             result = execute_query(query)
             print(result)

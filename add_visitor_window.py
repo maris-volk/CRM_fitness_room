@@ -1,14 +1,21 @@
 import re
-from PyQt5.QtWidgets import QVBoxLayout, QLabel, QLineEdit, QGridLayout, QDialog
+from PyQt5.QtWidgets import QVBoxLayout, QLabel, QLineEdit, QGridLayout, QDialog, QMessageBox
 from PyQt5.QtCore import Qt, QRectF, QPoint
 from PyQt5.QtGui import QPainter, QColor, QPen
+
+from database import check_phone_in_database,  \
+ add_subscription_to_existing_user, add_user_to_db
 from hover_button import HoverButton
 from subscription import SubscriptionWidget
+from utils import WorkerThread, logger
 
 
 class AddVisitorWindow(QDialog):
-    def __init__(self):
+    def __init__(self, main_window):
         super().__init__()
+        self.main_window = main_window
+        self.subscription_data = None  # Хранение данных о выбранном абонементе
+        self.subscription_button_state = False
         self.setWindowTitle("Добавление нового посетителя")
         self.setGeometry(300, 300, 426, 426)
         self.setWindowFlags(Qt.FramelessWindowHint)  # Remove window controls
@@ -97,9 +104,13 @@ class AddVisitorWindow(QDialog):
         trainer_button = HoverButton("+", 30, 30, 40, '#75A9A7', True, '', '', 5, '#5DEBE6')
         button_grid_layout.addWidget(trainer_button, 1, 0, alignment=Qt.AlignCenter)
 
-        subscription_button = HoverButton("+", 30, 30, 40, '#75A9A7', True, '', '', 5, '#5DEBE6')
-        subscription_button.clicked.connect(self.show_add_subscription)
-        button_grid_layout.addWidget(subscription_button, 1, 1, alignment=Qt.AlignCenter)
+        self.subscription_button = HoverButton("+", 30, 30, 40, '#75A9A7', True, '', '', 5, '#5DEBE6')
+        self.subscription_button.clicked.connect(self.show_add_subscription)
+        trainer_button.clicked.connect(lambda: self.validate_and_open_trainer_schedule(
+            first_name_input, last_name_input, patronymic_input, phone_input
+        ))
+
+        button_grid_layout.addWidget(self.subscription_button, 1, 1, alignment=Qt.AlignCenter)
 
         layout.addLayout(button_grid_layout)
 
@@ -124,6 +135,27 @@ class AddVisitorWindow(QDialog):
             self.add_visitor_window = SubscriptionWidget()
             self.add_visitor_window.show()
             self.add_visitor_window.raise_()
+            self.add_visitor_window.confirmed.connect(self.on_subscription_confirmed)
+
+    def on_subscription_confirmed(self, subscription_data):
+        # Получение данных из окна абонемента
+        self.subscription_data = subscription_data
+        print(self.subscription_data, 123)
+        if self.subscription_data is None:
+            self.subscription_button_state = False
+        else:
+            self.subscription_button_state = True
+        if self.subscription_button_state:
+            self.subscription_button.set_font_color("#50c878")
+            self.subscription_button.set_border_color("#50c878")
+            self.subscription_button.set_hover_border_color("#55ff55")
+            self.subscription_button.set_hover_text_color("#55ff55")
+        else:
+            self.subscription_button.set_font_color('#75A9A7')
+            self.subscription_button.set_border_color('#75A9A7')
+            self.subscription_button.set_hover_border_color('#5DEBE6')
+            self.subscription_button.set_hover_text_color('#5DEBE6')
+
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -159,8 +191,203 @@ class AddVisitorWindow(QDialog):
         if not re.match(r"^\+\d{10,15}$", phone_number):
             phone_input.setStyleSheet("border-color:red;")
             valid = False
+
+
         else:
             phone_input.setStyleSheet("border-color:#75A9A7;")
+            if not valid:
+                return
+
+            # Запуск потока для проверки и добавления пользователя/абонемента
+            self.add_user_thread = WorkerThread(
+                self.handle_user_and_subscription,
+                first_name,
+                last_name,
+                patronymic,
+                phone_number,
+                self.subscription_data
+            )
+            self.add_user_thread.result_signal.connect(self.on_user_added)
+            self.add_user_thread.error_signal.connect(self.on_error)
+            self.add_user_thread.start()
+
+    def validate_and_open_trainer_schedule(self, first_name_input, last_name_input, patronymic_input, phone_input):
+        first_name = first_name_input.text().strip()
+        last_name = last_name_input.text().strip()
+        patronymic = patronymic_input.text().strip()
+        phone_number = phone_input.text().strip()
+
+        valid = True
+
+        if not first_name:
+            first_name_input.setStyleSheet("border-color:red;")
+            valid = False
+        else:
+            first_name_input.setStyleSheet("border-color:#75A9A7;")
+
+        if not last_name:
+            last_name_input.setStyleSheet("border-color:red;")
+            valid = False
+        else:
+            last_name_input.setStyleSheet("border-color:#75A9A7;")
+
+        # Check phone number format (e.g., +1234567890)
+        if not re.match(r"^\+\d{10,15}$", phone_number):
+            phone_input.setStyleSheet("border-color:red;")
+            valid = False
+
+        if not self.subscription_data:
+            valid = False
+        else:
+            phone_input.setStyleSheet("border-color:#75A9A7;")
+            if not valid:
+                return
+
+            # Запуск потока для проверки и добавления пользователя/абонемента
+            self.add_user_thread = WorkerThread(
+                self.handle_user_and_subscription_for_add_trainer,
+                first_name,
+                last_name,
+                patronymic,
+                phone_number,
+                self.subscription_data
+            )
+            self.add_user_thread.result_signal.connect(self.on_trainer_added)
+            self.add_user_thread.error_signal.connect(self.on_error)
+            self.add_user_thread.start()
+
+
+    def handle_user_and_subscription(self, first_name, last_name, patronymic, phone_number, subscription_data):
+        """
+        Обрабатывает логику добавления пользователя и абонемента.
+        """
+        try:
+            # Проверка наличия пользователя с данным номером телефона
+            client_id = check_phone_in_database(phone_number)
+            if client_id:
+                return "Клиент с таким номером телефона уже существует."
+
+            # Добавление нового пользователя
+            client_id = add_user_to_db(first_name, last_name, patronymic, phone_number)
+
+            if not client_id:
+                raise Exception("Ошибка при добавлении нового пользователя.")
+
+            if subscription_data:
+                # Добавление абонемента
+                subscription_id = add_subscription_to_existing_user(client_id, subscription_data)
+                if not subscription_id:
+                    raise Exception("Ошибка при добавлении абонемента.")
+                return "Клиент успешно добавлен с абонементом."
+            else:
+                return "Клиент успешно добавлен без абонемента."
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении пользователя/абонемента: {e}")
+            raise e
+
+    def handle_user_and_subscription_for_add_trainer(self, first_name, last_name, patronymic, phone_number, subscription_data):
+        """
+        Обрабатывает логику добавления пользователя и абонемента.
+        """
+        try:
+            # Проверка наличия пользователя с данным номером телефона
+            client_id = check_phone_in_database(phone_number)
+            if client_id:
+                return {
+                    "status": "error",
+                    "message": "Клиент с таким номером телефона уже существует."
+                }
+
+            # Добавление нового пользователя
+            client_id = add_user_to_db(first_name, last_name, patronymic, phone_number)
+
+            if not client_id:
+                return {
+                    "status": "error",
+                    "message": "Ошибка при добавлении нового пользователя."
+                }
+
+            if subscription_data:
+                # Добавление абонемента
+                subscription_id = add_subscription_to_existing_user(client_id, subscription_data)
+                if not subscription_id:
+                    return {
+                        "status": "error",
+                        "message": "Ошибка при добавлении абонемента."
+                    }
+
+                # Успешный результат
+                return {
+                    "status": "success",
+                    "message": "Клиент успешно добавлен с абонементом.",
+                    "client_data": {
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "patronymic": patronymic,
+                        "phone_number": phone_number,
+                        "subscription_data": subscription_data
+                    }
+                }
+            else:
+                return {
+                    "status": "success",
+                    "message": "Клиент успешно добавлен без абонемента.",
+                    "client_data": {
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "patronymic": patronymic,
+                        "phone_number": phone_number,
+                        "subscription_data": None
+                    }
+                }
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении пользователя/абонемента: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+
+    def on_user_added(self, message):
+        """
+        Обработка завершения добавления пользователя.
+        """
+        QMessageBox.information(self, "Результат", message)
+
+    def on_trainer_added(self, result):
+        """
+        Обрабатывает результат добавления нового пользователя.
+        """
+        # Проверка статуса результата
+        if result.get("status") == "error":
+            QMessageBox.critical(self, "Ошибка", result.get("message", "Произошла неизвестная ошибка."))
+            return
+
+        # Получение данных клиента
+        client_data = result.get("client_data")
+        if not client_data:
+            QMessageBox.critical(self, "Ошибка", "Не удалось получить данные о клиенте.")
+            return
+
+        # Передача данных в MainWindow
+        self.main_window.selected_client = {
+            "first_name": client_data["first_name"],
+            "last_name": client_data["last_name"],
+            "patronymic": client_data["patronymic"],
+            "phone_number": client_data["phone_number"]
+        }
+        self.main_window.subscription_data = client_data["subscription_data"]
+
+        # Переключение на страницу расписания
+        self.main_window.from_add_client = True
+        self.main_window.update_days(self.main_window.current_week, self.main_window.selected_trainer_id)
+        self.main_window.switch_to_page(self.main_window.schedule_page)
+        self.close()
+
+    def on_error(self, error_message):
+        """
+        Обработка ошибок.
+        """
+        QMessageBox.critical(self, "Ошибка", error_message)
 
     def paintEvent(self, event):
         # Custom paint event for rounded corners and border
@@ -186,6 +413,7 @@ class AddVisitorWindow(QDialog):
             painter.drawRect(rect)
 
         painter.end()
+
 
     def mousePressEvent(self, event):
         # Store initial position for window dragging
