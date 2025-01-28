@@ -20,8 +20,8 @@ class ChartWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_period = datetime.date.today()
-        self.granularity = 'day'  # Возможные значения: 'day', 'week', 'month', 'year'
-        self.is_fetching = False  # Флаг для управления потоками
+        self.granularity = 'day'  # 'day', 'week', 'month', 'year'
+        self.is_fetching = False  # для управления потоками
         self.chart_view = self.create_chart_view()
         self.initUI()
 
@@ -30,12 +30,10 @@ class ChartWidget(QWidget):
         self.layout.setContentsMargins(10, 10, 10, 10)
         self.layout.setSpacing(10)
 
-        # Верхняя часть: стрелки навигации и диаграмма
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(10)
 
-        # Стрелка влево
         self.prev_button = QPushButton("<")
         self.prev_button.setFixedSize(30, 30)
         self.prev_button.setStyleSheet("""
@@ -53,13 +51,12 @@ class ChartWidget(QWidget):
         self.prev_button.clicked.connect(self.go_prev)  # Подключение метода go_prev
         top_layout.addWidget(self.prev_button, alignment=Qt.AlignVCenter)
 
-        # Диаграмма
+        # диаграмма
         self.chart_view = self.chart_view
         self.chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.chart_view.setMinimumWidth(600)  # Устанавливаем минимальную ширину
         top_layout.addWidget(self.chart_view)
 
-        # Стрелка вправо
         self.next_button = QPushButton(">")
         self.next_button.setFixedSize(30, 30)
         self.next_button.setStyleSheet("""
@@ -79,12 +76,12 @@ class ChartWidget(QWidget):
 
         self.layout.addLayout(top_layout)
 
-        # Нижняя часть: кнопки выбора периода
+        # кнопки выбора периода
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(10)
 
-        # Кнопки выбора периода
+        # кнопки выбора периода
         self.day_button = QPushButton("День")
         self.day_button.setFixedSize(80, 30)
         self.day_button.setStyleSheet(self.get_period_button_style(selected=True))
@@ -109,7 +106,7 @@ class ChartWidget(QWidget):
         self.year_button.clicked.connect(lambda: self.set_granularity('year'))
         bottom_layout.addWidget(self.year_button)
 
-        # Добавляем растяжку для выравнивания кнопок по центру
+        # добавляем растяжку для выравнивания кнопок по центру
         bottom_layout.addStretch()
 
         self.layout.addLayout(bottom_layout)
@@ -149,23 +146,22 @@ class ChartWidget(QWidget):
 
     def get_week_number_within_month(self, date):
         """
-        Возвращает номер недели внутри месяца для данной даты.
-        Неделя начинается с понедельника.
+        номер недели внутри месяца для данной даты.
+        неделя с понедельника.
         """
         first_day = date.replace(day=1)
         first_weekday = first_day.weekday()  # 0 = Monday, 6 = Sunday
-        # Рассчитываем, в какую неделю попадает текущая дата
+        # в какую неделю попадает текущая дата
         week_number = ((date.day + first_weekday - 1) // 7) + 1
         return week_number
 
     def create_chart_view(self):
         """
-        Создает графическое представление данных с сохранением оригинальных стилей.
+        графическое представление данных с сохранением оригинальных стилей.
         """
         logger.info("Создание диаграммы")
 
         set0 = QBarSet("Посетители")
-        # Пример данных; замените на реальные данные при необходимости
 
         set0.setColor(QColor("#628F8D"))
 
@@ -177,11 +173,11 @@ class ChartWidget(QWidget):
         chart.addSeries(series)
         heute = datetime.date.today()
 
-        # Форматируем дату в зависимости от гранулярности (будет рассмотрено далее)
+        # форматирование даты в зависимости от гранулярности
         formatiertes_datum = heute.strftime("%d.%m.%Y")
         chart.setTitle(f"{formatiertes_datum}")
 
-        title_font = QFont("Unbounded", 12, QFont.Bold)  # Увеличиваем размер шрифта заголовка
+        title_font = QFont("Unbounded", 12, QFont.Bold)
         chart.setTitleFont(title_font)
         chart.setTitleBrush(QBrush(QColor("black")))
 
@@ -190,49 +186,49 @@ class ChartWidget(QWidget):
         axisX.append(categories)
 
         axisY = QValueAxis()
-        axisY.setLabelsVisible(False)  # Скрываем подписи оси Y
+        axisY.setLabelsVisible(False)  # скрываем подписи оси Y
 
-        axis_font = QFont("Unbounded", 8)  # Увеличиваем размер шрифта для подписей оси X
+        axis_font = QFont("Unbounded", 8)  # размер шрифта для подписей оси X
         axisX.setLabelsFont(axis_font)
         axisY.setLabelsFont(axis_font)
-        axisX.setLabelsAngle(45)  # Поворачиваем подписи на 45 градусов для лучшей читаемости
-        chart.addAxis(axisX, Qt.AlignBottom)  # Размещаем ось X снизу
+        axisX.setLabelsAngle(45)  # поворотна 45 градусов
+        chart.addAxis(axisX, Qt.AlignBottom)  # ось X снизу
         chart.addAxis(axisY, Qt.AlignLeft)
 
         series.attachAxis(axisX)
         series.attachAxis(axisY)
-        chart.setMargins(QMargins(10, 10, 10, 10))  # Уменьшаем отступы вокруг диаграммы
+        chart.setMargins(QMargins(10, 10, 10, 10))
 
         self.chart = chart  # Обязательно присваиваем self.chart
         logger.info("self.chart успешно создан")
 
         chart_view = QChartView(chart)
         chart_view.setStyleSheet("""
-                    border: 2.7px solid #628F8D; /* Цвет и толщина границы */
-                    border-radius: 18px;      /* Радиус закругления углов */
-                    background-color: white; /* Цвет фона для проверки */
+                    border: 2.7px solid #628F8D;
+                    border-radius: 18px;     
+                    background-color: white; 
         """)
-        # Удаляем фиксированные размеры
+
         # chart_view.setMinimumSize(441, 340)
         # chart_view.setMaximumSize(441, 340)
-        chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # Обеспечиваем расширение
-        chart_view.setMinimumWidth(600)  # Устанавливаем минимальную ширину
+        chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # расширение
+        chart_view.setMinimumWidth(600)
         chart_view.setRenderHint(QPainter.Antialiasing)
         series.hovered.connect(self.show_tooltip)
         return chart_view
 
     def show_tooltip(self, status, barset, index):
         """
-        Показывает подсказку при наведении на график.
+        подсказка при наведении на график.
         """
         if status:
-            # Проверяем порядок аргументов: index может быть целым числом, а barset объектом QBarSet
+            #  index может быть целым числом, а barset объектом QBarSet
             if isinstance(barset, QBarSet) and isinstance(index, int):
                 value = barset.at(index)  # Получаем значение из QBarSet по индексу
                 tooltip_text = f"Посетители: {value}"
                 QToolTip.showText(QCursor.pos(), tooltip_text)
             elif isinstance(barset, int) and isinstance(index, QBarSet):
-                # Если порядок аргументов перепутан
+                # порядок аргументов перепутан
                 value = index.at(barset)  # Здесь barset — это индекс
                 tooltip_text = f"Посетители: {value}"
                 QToolTip.showText(QCursor.pos(), tooltip_text)
@@ -241,21 +237,21 @@ class ChartWidget(QWidget):
 
     def update_chart(self):
         """
-        Обновляет диаграмму в зависимости от текущей гранулярности и периода.
+        обновление диаграммы в зависимости от текущей гранулярности и периода.
         """
         if self.is_fetching:
             logger.info("Запрос уже выполняется. Ожидание завершения.")
-            return  # Игнорируем новые запросы, пока текущий не завершен
+            return
 
         self.is_fetching = True
-        self.set_buttons_enabled(False)  # Отключаем кнопки на время обновления
+        self.set_buttons_enabled(False)
 
         logger.info(f"Обновление диаграммы: Гранулярность={self.granularity}, Период={self.current_period}")
 
         if self.granularity == 'day':
             start_date = self.current_period
             end_date = self.current_period
-            # Запуск запроса в отдельном потоке
+            # запрос в отдельном потоке
             self.fetch_data_thread = WorkerThread(get_max_visitors_per_hour, start_date, end_date)
             self.fetch_data_thread.result_signal.connect(
                 lambda data: self.process_chart_data(
@@ -270,12 +266,11 @@ class ChartWidget(QWidget):
             start_date = self.current_period - datetime.timedelta(days=self.current_period.weekday())
             end_date = start_date + datetime.timedelta(days=6)
             week_number = self.get_week_number_within_month(start_date)
-            # Запуск запроса в отдельном потоке
             self.fetch_data_thread = WorkerThread(get_average_visitors_per_weekday, start_date, end_date)
             self.fetch_data_thread.result_signal.connect(
                 lambda data: self.process_chart_data(
                     data,
-                    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'],  # Английские аббревиатуры
+                    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'],
                     f"Неделя {week_number} {start_date.strftime('%m.%Y')}"
                 )
             )
@@ -283,7 +278,7 @@ class ChartWidget(QWidget):
             self.fetch_data_thread.start()
         elif self.granularity == 'month':
             start_date = self.current_period.replace(day=1)
-            next_month = start_date.replace(day=28) + datetime.timedelta(days=4)  # Перейти на следующий месяц
+            next_month = start_date.replace(day=28) + datetime.timedelta(days=4)  # на следующий месяц
             end_date = next_month - datetime.timedelta(days=next_month.day)
             month = start_date.month
             year = start_date.year
@@ -300,12 +295,11 @@ class ChartWidget(QWidget):
             self.fetch_data_thread.start()
         elif self.granularity == 'year':
             year = self.current_period.year
-            # Запуск запроса в отдельном потоке
             self.fetch_data_thread = WorkerThread(get_average_visitors_per_month, year)
             self.fetch_data_thread.result_signal.connect(
                 lambda data: self.process_chart_data(
                     data,
-                    [f"{i:02}" for i in range(1, 13)],  # Числовые значения месяцев
+                    [f"{i:02}" for i in range(1, 13)],  # числовые значения месяцев
                     f"{year}"
                 )
             )
@@ -319,21 +313,20 @@ class ChartWidget(QWidget):
 
     def on_fetch_finished(self):
         """
-        Метод вызывается по завершении потока загрузки данных.
+        по завершении потока загрузки данных.
         """
         self.is_fetching = False
         self.set_buttons_enabled(True)
 
     def process_chart_data(self, data, categories, title):
         """
-        Обрабатывает полученные данные и обновляет диаграмму.
+        полученные данные и диаграмма.
         """
         if data is None:
             logger.error("Нет данных для обновления диаграммы")
             self.on_fetch_finished()
             return
 
-        # Обновляем данные диаграммы
         self.chart.removeAllSeries()
         series = QBarSeries()
         self.chart.addSeries(series)
@@ -346,7 +339,6 @@ class ChartWidget(QWidget):
 
         series.append(set_visitors)
 
-        # Настройка осей
         axis_x = QBarCategoryAxis()
         axis_x.append(categories)
 
@@ -364,10 +356,9 @@ class ChartWidget(QWidget):
         series.attachAxis(axis_x)
         series.attachAxis(axis_y)
 
-        # Обновляем заголовок диаграммы
-        self.chart.setTitle(title)  # title теперь содержит только период
+        self.chart.setTitle(title)  # title только период
 
-        # Обновляем легенду
+        # легенда
         self.chart.legend().setVisible(True)
         self.chart.legend().setAlignment(Qt.AlignBottom)
 
@@ -375,16 +366,15 @@ class ChartWidget(QWidget):
 
     def set_granularity(self, granularity):
         """
-        Устанавливает гранулярность и обновляет диаграмму.
+        устанавливка гранулярности и обновление диаграммы.
         """
         if self.is_fetching:
             logger.info("Обновление гранулярности уже выполняется. Ожидание завершения.")
-            return  # Игнорируем изменение гранулярности, пока идет загрузка
+            return  # игнорирование изменение гранулярности
 
         self.granularity = granularity
         logger.info(f"Установка гранулярности: {self.granularity}")
 
-        # Обновляем стили кнопок
         self.day_button.setStyleSheet(self.get_period_button_style(selected=(granularity == 'day')))
         self.week_button.setStyleSheet(self.get_period_button_style(selected=(granularity == 'week')))
         self.month_button.setStyleSheet(self.get_period_button_style(selected=(granularity == 'month')))
@@ -393,9 +383,7 @@ class ChartWidget(QWidget):
         self.update_chart()
 
     def set_buttons_enabled(self, enabled):
-        """
-        Включает или отключает все кнопки управления.
-        """
+
         self.prev_button.setEnabled(enabled)
         self.next_button.setEnabled(enabled)
         self.day_button.setEnabled(enabled)
@@ -405,11 +393,11 @@ class ChartWidget(QWidget):
 
     def go_prev(self):
         """
-        Переходит к предыдущему периоду в зависимости от гранулярности.
+        к предыдущему периоду в зависимости от гранулярности.
         """
         if self.is_fetching:
             logger.info("Переход к предыдущему периоду уже выполняется. Ожидание завершения.")
-            return  # Игнорируем, если идет загрузка
+            return
 
         if self.granularity == 'day':
             self.current_period -= datetime.timedelta(days=1)
@@ -425,11 +413,11 @@ class ChartWidget(QWidget):
 
     def go_next(self):
         """
-        Переходит к следующему периоду в зависимости от гранулярности.
+        к следующему периоду в зависимости от гранулярности.
         """
         if self.is_fetching:
             logger.info("Переход к следующему периоду уже выполняется. Ожидание завершения.")
-            return  # Игнорируем, если идет загрузка
+            return
 
         if self.granularity == 'day':
             self.current_period += datetime.timedelta(days=1)

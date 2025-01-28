@@ -40,6 +40,7 @@ connection_pool = psycopg2.pool.ThreadedConnectionPool(
     database='2024_psql_miros'
 )
 
+
 def log_connection_pool_status():
     try:
         logger.info(f"Пул соединений: минимальное={connection_pool.minconn}, максимальное={connection_pool.maxconn}")
@@ -47,7 +48,7 @@ def log_connection_pool_status():
         logger.error(f"Ошибка проверки состояния пула: {e}")
 
 
-def execute_query(query, params=None, fetch=True):
+def execute_query(query, params=None, fetch=True, fetch_one=False):
     conn = None
     try:
         conn = connection_pool.getconn()
@@ -57,8 +58,12 @@ def execute_query(query, params=None, fetch=True):
             cursor.execute(query, params)
             conn.commit()
             if fetch:
-                result = cursor.fetchall()
-                logger.info(f"Получено {len(result)} записей")
+                if fetch_one:
+                    result = cursor.fetchone()
+                    logger.info(f"Получена одна запись: {result}")
+                else:
+                    result = cursor.fetchall()
+                    logger.info(f"Получено {len(result)} записей")
                 return result
     except Exception as e:
         if conn:
@@ -69,8 +74,6 @@ def execute_query(query, params=None, fetch=True):
         if conn:
             connection_pool.putconn(conn)
             logger.info(f"Соединение возвращено в пул: {id(conn)}")
-
-
 
 def count_all_trainers():
     """
@@ -126,7 +129,6 @@ def get_schedule_for_week(trainer_id, start_date, end_date):
     return {}
 
 
-
 def check_phone_in_database(phone_number):
     """
     Проверяет, существует ли клиент с данным номером телефона.
@@ -159,6 +161,7 @@ def add_user_to_db(surname, first_name, patronymic, phone_number):
         logger.error(f"Ошибка при добавлении пользователя: {e}, Query: {query}, Params: {params}")
         return None
 
+
 def add_subscription_to_existing_user(user_id, subscription_data):
     from datetime import datetime
     import re
@@ -179,17 +182,21 @@ def add_subscription_to_existing_user(user_id, subscription_data):
         else:
             price = float(price_raw)  # Если это уже число
         query_subscription = """
-            INSERT INTO public.subscription (tariff, valid_since, valid_until, is_valid, price, count_of_visits)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO public.subscription (tariff, valid_since, valid_until, is_valid, price, visit_ids, frozen_from, frozen_until)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING subscription_id;
         """
+        frozen_from = None
+        frozen_until = None
         params_subscription = (
             subscription_data["tariff"],
             valid_since,
             valid_until,
             subscription_data["is_valid"],
             price,
-            subscription_data["count_of_visits"]
+            [],  # Изначально пустой массив для visit_ids
+            frozen_from,  # NULL для начала заморозки
+            frozen_until  # NULL для окончания заморозки
         )
         result = execute_query(query_subscription, params_subscription, fetch=True)
         if not result:
@@ -213,6 +220,139 @@ def add_subscription_to_existing_user(user_id, subscription_data):
         logger.error(f"Ошибка при добавлении абонемента: {e}")
         return None
 
+# def add_subscription_to_existing_user(user_id, subscription_data):
+#     from datetime import datetime
+#
+#     """
+#     Добавляет абонемент в базу данных и привязывает его к существующему пользователю.
+#     При этом поле visit_ids инициализируется как пустой массив, так как посещения еще не зарегистрированы.
+#     Поля frozen_from и frozen_until по умолчанию остаются NULL.
+#     """
+#
+#     try:
+#         # Получаем дату начала абонемента
+#         start_date_raw = subscription_data.get("start_date")
+#         if not start_date_raw:
+#             raise ValueError("Дата начала (start_date) отсутствует в данных абонемента.")
+#
+#         valid_since = datetime.strptime(start_date_raw, "%d.%m.%Y").strftime("%Y-%m-%d")
+#
+#         # Дата окончания абонемента
+#         valid_until_raw = subscription_data.get("end_date")
+#         valid_until = datetime.strptime(valid_until_raw, "%d.%m.%Y").strftime("%Y-%m-%d")
+#
+#         # Заморозка не передается, оставляем NULL
+#         frozen_from = None
+#         frozen_until = None
+#
+#         # Обрабатываем цену
+#         price_raw = subscription_data.get("price")
+#         if isinstance(price_raw, str) and "₽" in price_raw:
+#             price = float(price_raw.replace("₽", "").strip())
+#         else:
+#             price = float(price_raw)  # Если это уже число
+#
+#         # Вставляем абонемент в таблицу subscription
+#         query_subscription = """
+#             INSERT INTO public.subscription (tariff, valid_since, valid_until, is_valid, price, visit_ids, frozen_from, frozen_until)
+#             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+#             RETURNING subscription_id;
+#         """
+#         # Параметры для абонемента (с пустым массивом для посещений и NULL для заморозки)
+#         params_subscription = (
+#             subscription_data["tariff"],
+#             valid_since,
+#             valid_until,
+#             subscription_data["is_valid"],
+#             price,
+#             [],  # Изначально пустой массив для visit_ids
+#             frozen_from,  # NULL для начала заморозки
+#             frozen_until  # NULL для окончания заморозки
+#         )
+#
+#         result = execute_query(query_subscription, params_subscription, fetch=True)
+#         if not result:
+#             logger.error("Не удалось добавить абонемент.")
+#             return None
+#
+#         subscription_id = result[0][0]
+#         logger.info(f"Абонемент добавлен с ID {subscription_id}.")
+#
+#         # Привязываем абонемент к пользователю
+#         query_update_user = """
+#             UPDATE public.client
+#             SET subscription = %s
+#             WHERE client_id = %s;
+#         """
+#         params_update_user = (subscription_id, user_id)
+#         execute_query(query_update_user, params_update_user, fetch=False)
+#         logger.info(f"Абонемент с ID {subscription_id} привязан к клиенту с ID {user_id}.")
+#
+#         return subscription_id
+#
+#     except Exception as e:
+#         logger.error(f"Ошибка при добавлении абонемента: {e}")
+#         return None
+
+
+def freeze_subscription(subscription_id, freeze_start, freeze_end):
+    """
+    Замораживает абонемент на указанный период и обновляет дату окончания абонемента.
+    """
+    try:
+        # Проверка, не была ли уже заморожена на этот период
+        query = """
+        SELECT valid_until, frozen_from, frozen_until FROM subscription WHERE subscription_id = %s;
+        """
+        params = (subscription_id,)
+        result = execute_query(query, params, fetch=True)
+
+        if not result:
+            print(f"Абонемент с ID {subscription_id} не найден.")
+            return
+
+        valid_until = result[0][0]
+        frozen_from = result[0][1]
+        frozen_until = result[0][2]
+
+        # Перерасчёт времени заморозки и актуальной даты окончания
+        if frozen_from and frozen_until:
+            frozen_period = (
+                        datetime.strptime(frozen_until, "%Y-%m-%d") - datetime.strptime(frozen_from, "%Y-%m-%d")).days
+            new_valid_until = datetime.strptime(valid_until, "%Y-%m-%d") + datetime.timedelta(days=frozen_period)
+        else:
+            # Если не было заморозки, то просто обновляем поле для новой заморозки
+            new_valid_until = valid_until
+
+        # Обновляем дату окончания абонемента с учётом заморозки
+        query_update = """
+        UPDATE subscription
+        SET frozen_from = %s, frozen_until = %s, actual_valid_until = %s
+        WHERE subscription_id = %s;
+        """
+        params_update = (freeze_start, freeze_end, new_valid_until.strftime("%Y-%m-%d"), subscription_id)
+        execute_query(query_update, params_update, fetch=False)
+
+        print(f"Абонемент {subscription_id} заморожен с {freeze_start} по {freeze_end}, дата окончания обновлена.")
+    except Exception as e:
+        print(f"Ошибка при заморозке абонемента: {e}")
+
+
+def get_visit_ids_for_client(user_id):
+    """
+    Функция для получения ID посещений клиента.
+    Возвращает список ID посещений, связанных с этим пользователем.
+    """
+    query = """
+        SELECT visit_id
+        FROM public.visit_fitness_room
+        WHERE client = %s;
+    """
+    result = execute_query(query, (user_id,), fetch=True)
+    if result:
+        return [row[0] for row in result]  # Возвращаем список ID посещений
+    else:
+        return []
 
 
 def add_user_with_subscription(first_name, last_name, patronymic, phone_number, subscription_data):
@@ -228,7 +368,6 @@ def add_user_with_subscription(first_name, last_name, patronymic, phone_number, 
             logger.error(f"Не удалось добавить абонемент для пользователя {first_name} {last_name}.")
     else:
         logger.error(f"Не удалось добавить пользователя {first_name} {last_name}.")
-
 
 
 def get_schedule_data_with_hash(trainer_id, start_date, end_date):
@@ -278,7 +417,6 @@ def get_schedule_data_with_hash(trainer_id, start_date, end_date):
     return db_hash, schedule_data
 
 
-
 def get_all_trainers():
     """
     Возвращает список всех тренеров из базы данных.
@@ -309,8 +447,6 @@ def get_all_trainers():
         print(f"Ошибка в get_all_trainers: {e}")
         traceback.print_exc()
         return []
-
-
 
 
 def fetch_trainers_from_db():

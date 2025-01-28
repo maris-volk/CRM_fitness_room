@@ -12,11 +12,12 @@ class HoverButton(QPushButton):
     def __init__(self, text='', width: float = 347, height: float = 72, font_size: float = 22,
                  font_color: str = 'black', non_padding: bool = False, default_border: str = '',
                  hover_border: str = '', border_radius: float = 18, hover_text_color: str = '',
-                 margin: float = 0, parent=None):
+                 margin: float = 0,weight: float =400, parent=None):
         super().__init__(text, parent)
-        self.setMouseTracking(True)  # Включаем отслеживание мыши
+        self.setMouseTracking(True)
         self.width_value = width
         self.height_value = height
+        self.weight = weight
         self.margin_value = margin
         self.font_size_value = font_size
         self.font_color_value = font_color
@@ -37,6 +38,15 @@ class HoverButton(QPushButton):
         self.setFixedHeight(int(self.height_value))
         self.apply_default_shadow()
 
+    def mousePressEvent(self, event):
+        """Перехватывает событие клика и предотвращает его распространение."""
+        super().mousePressEvent(event)
+        event.accept()
+    def mouseMoveEvent(self, event):
+        """Перехватывает событие перемещения мыши и предотвращает его распространение."""
+        super().mouseMoveEvent(event)
+        event.accept()
+
     def apply_styles(self):
         if self.is_disabled:
             # Стиль для отключённой кнопки
@@ -52,6 +62,7 @@ class HoverButton(QPushButton):
                 font-family: 'Unbounded';
                 font-size: {self.font_size_value}px;
                 margin-top: {self.margin_value}px;
+                font-weight: {self.weight};
             }}
             """)
         else:
@@ -68,8 +79,12 @@ class HoverButton(QPushButton):
                 font-family: 'Unbounded';
                 font-size: {self.font_size_value}px;
                 margin-top: {self.margin_value}px;
+                font-weight: {self.weight};
             }}
             """)
+
+
+
 
     def apply_default_shadow(self):
         if not self.is_disabled:
@@ -90,7 +105,7 @@ class HoverButton(QPushButton):
             self.setGraphicsEffect(shadow)
 
     def enterEvent(self, event):
-        if not self.is_disabled:  # Убираем эффект наведения, если кнопка отключена
+        if not self.is_disabled:
             self.apply_hover_shadow()
             self.setCursor(Qt.PointingHandCursor)
             self.setStyleSheet(f"""
@@ -105,6 +120,7 @@ class HoverButton(QPushButton):
                 font-family: 'Unbounded';
                 font-size: {self.font_size_value}px;
                 margin-top: {self.margin_value}px;
+                font-weight: {self.weight};
             }}
             """)
         super().enterEvent(event)
@@ -168,8 +184,11 @@ class HoverButton(QPushButton):
 
 
 class SvgHoverButton(QPushButton):
-    def __init__(self, svg_path, width=30, height=30, hover_color="#5DEBE6", default_color="#75A9A7", parent=None):
+    def __init__(self, svg_path, width=30, height=30, hover_color="#5DEBE6", default_color="#75A9A7", attrib='fill', need_shadow=True,parent=None):
+
         super().__init__(parent)
+        self.need_shadow = need_shadow
+        self.attrib = attrib
         self.svg_path = svg_path
         self.width_value = width
         self.height_value = height
@@ -185,17 +204,25 @@ class SvgHoverButton(QPushButton):
 
     def initUI(self):
         self.setFixedSize(self.width_value, self.height_value)
-        self.apply_default_shadow()
+        if self.need_shadow:
+            self.apply_default_shadow()
         self.load_svg_with_color(self.default_color)
         self.update_buffer()
 
     def apply_default_shadow(self):
         if not self.is_disabled:
             shadow = QGraphicsDropShadowEffect()
-            shadow.setBlurRadius(10)
+            if self.need_shadow:
+                shadow.setBlurRadius(10)
+            else:
+                shadow.setBlurRadius(0)
             shadow.setXOffset(0)
             shadow.setYOffset(0)
-            shadow.setColor(QColor(0, 0, 0, 100))
+            if self.need_shadow:
+                shadow.setColor(QColor(0, 0, 0, 100))
+            else:
+                shadow.setColor(QColor(0, 0, 0, 0))
+
             self.setGraphicsEffect(shadow)
 
     def apply_hover_shadow(self):
@@ -207,21 +234,24 @@ class SvgHoverButton(QPushButton):
             shadow.setColor(QColor(0, 0, 0, 150))
             self.setGraphicsEffect(shadow)
 
-    def load_svg_with_color(self, color):
-        """Загружает SVG и заменяет цвет в элементах path."""
+    def load_svg_with_color(self, color=None):
+        """Загружает SVG и заменяет цвет в элементах path с учётом текущего состояния."""
         try:
             with open(self.svg_path, 'r') as file:
                 svg_content = file.read()
 
-            # Загружаем SVG в DOM
+            if color is None:
+                color = self.hover_color if self.is_hovered else self.default_color
+
             dom = parseString(svg_content)
             paths = dom.getElementsByTagName('path')
 
-            # Заменяем атрибут fill в каждом элементе path
             for path in paths:
-                path.setAttribute('fill', color)
+                if self.attrib == 'stroke':
+                    path.setAttribute('stroke', color)
+                else:
+                    path.setAttribute('fill', color)
 
-            # Конвертируем обратно в байтовый массив
             self.modified_svg_data = QByteArray(dom.toxml(encoding="utf-8"))
             self.svg_renderer = QSvgRenderer(self.modified_svg_data)
         except Exception as e:
@@ -230,12 +260,11 @@ class SvgHoverButton(QPushButton):
     def update_buffer(self):
         """Обновляет оффскрин буфер с текущим состоянием кнопки."""
         self.buffer_pixmap = QPixmap(self.size())
-        self.buffer_pixmap.fill(Qt.transparent)  # Заполняем прозрачностью
+        self.buffer_pixmap.fill(Qt.transparent)
 
         painter = QPainter(self.buffer_pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Отрисовываем SVG
         if self.modified_svg_data:
             rect = QRectF(5, 5, self.width_value - 10, self.height_value - 10)
             self.svg_renderer.render(painter, rect)
@@ -244,22 +273,24 @@ class SvgHoverButton(QPushButton):
 
     def enterEvent(self, event):
         if not self.is_disabled:
+            self.setCursor(Qt.PointingHandCursor)
             self.is_hovered = True
             self.current_color = self.hover_color
             self.load_svg_with_color(self.hover_color)
             self.apply_hover_shadow()
-            self.update_buffer()  # Обновляем буфер с новым цветом и тенями
-            self.update()  # Перерисовываем кнопку
+            self.update_buffer()
+            self.update()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         if not self.is_disabled:
+            self.unsetCursor()
             self.is_hovered = False
             self.current_color = self.default_color
             self.load_svg_with_color(self.default_color)
             self.apply_default_shadow()
-            self.update_buffer()  # Обновляем буфер с новым цветом и тенями
-            self.update()  # Перерисовываем кнопку
+            self.update_buffer()
+            self.update()
         super().leaveEvent(event)
 
     def paintEvent(self, event):
@@ -285,7 +316,6 @@ class SvgHoverButton(QPushButton):
 
         if timeout is not None:
             QTimer.singleShot(timeout, self.enable_button)
-
 
 
     def enable_button(self):
@@ -336,7 +366,6 @@ class TrainerButton(QWidget):
         self.initUI()
 
     def initUI(self):
-        # Создаем сеточный макет
         layout = QGridLayout(self)
         layout.setAlignment(Qt.AlignCenter)
 
@@ -357,9 +386,9 @@ class TrainerButton(QWidget):
         self.apply_default_shadow(self.avatar_label)
 
         # Имя тренера
-        self.name_label = QLabel(self.name, self)  # Создаем перед вызовом apply_styles
+        self.name_label = QLabel(self.name, self)
         self.name_label.setAlignment(Qt.AlignCenter)
-        self.name_label.setWordWrap(True)  # Включаем перенос текста
+        self.name_label.setWordWrap(True)
         self.name_label.setStyleSheet(f"""
             QLabel {{
                 font-family: 'Unbounded';
@@ -369,7 +398,6 @@ class TrainerButton(QWidget):
             }}
         """)
 
-        # Добавляем виджеты в макет
         layout.addWidget(self.avatar_label, 0, 0, alignment=Qt.AlignCenter)  # Аватарка
         layout.addWidget(self.name_label, 1, 0, alignment=Qt.AlignCenter)  # Имя
 
@@ -381,7 +409,7 @@ class TrainerButton(QWidget):
 
     def apply_styles(self, hovered=False):
         """Обновляет стили в зависимости от состояния выбора или наведения."""
-        if hasattr(self, 'name_label') and self.name_label:  # Проверяем наличие name_label
+        if hasattr(self, 'name_label') and self.name_label:
             if self.is_selected:
                 self.avatar_label.setStyleSheet(f"""
                     QLabel {{
@@ -497,6 +525,6 @@ class TrainerButton(QWidget):
             elif event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
                 self.is_selected = not self.is_selected
                 self.update_styles()
-                self.clicked.emit()  # Испускаем сигнал при клике
+                self.clicked.emit()
                 return True
         return super().eventFilter(source, event)

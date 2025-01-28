@@ -1,4 +1,6 @@
 import re
+
+from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QLineEdit, QGridLayout, QDialog, QPushButton, QFrame, \
     QGraphicsDropShadowEffect, QMessageBox
 from PyQt5.QtCore import Qt, QRectF, QPoint, pyqtSignal, QDate
@@ -75,7 +77,7 @@ class SelectionGroupWidget(QFrame):
     def select_closest_option(self):
         """Выбирает ближайшую доступную опцию, если текущая недоступна."""
         if self.selected_option not in self.options:
-            if self.options:  # Проверяем наличие доступных опций
+            if self.options:
                 self.selected_option = self.options[-1]  # Последняя доступная неделя
                 self.update_selection_highlight()
 
@@ -111,7 +113,7 @@ class SelectionGroupWidget(QFrame):
         layout = QHBoxLayout()
         for option in self.options:
             label = SelectableLabel(option, font_size=15)
-            label.setObjectName(f"{self.group_type}_{option}")  # Присваиваем уникальное имя для каждого элемента
+            label.setObjectName(f"{self.group_type}_{option}")
             label.clicked.connect(
                 lambda opt=option, grp_type=self.group_type: self.select_option(opt, grp_type))
             layout.addWidget(label)
@@ -119,8 +121,8 @@ class SelectionGroupWidget(QFrame):
 
     def select_option(self, option, group_type):
         """Выбор параметра"""
-        self.selected_option = option  # Запоминаем выбранный параметр
-        self.deselect_other_labels()  # Снимаем выделение с других кнопок этой группы
+        self.selected_option = option
+        self.deselect_other_labels()
         self.update_parent_options()
 
     def deselect_other_labels(self):
@@ -141,7 +143,7 @@ class SelectionGroupWidget(QFrame):
         """Обрабатывает выбор недели через SelectionGroupWidget."""
         selected_week = self.week_buttons_group.selected_option
         if selected_week:
-            week_number = int(selected_week.split()[0])  # Извлекаем номер недели
+            week_number = int(selected_week.split()[0])
             self.update_days(week_number)
 
     def mousePressEvent(self, event):
@@ -154,20 +156,18 @@ class SelectionGroupWidget(QFrame):
         """Обновляет параметры виджета."""
         self.options = options
 
-        # Удаляем старые элементы
         while self.layout.count():
             item = self.layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
 
-        # Создаем новые элементы
         self.create_selection_widget1()
 
     def create_selection_widget1(self):
         for option in self.options:
             label = SelectableLabel(option, font_size=15)
-            label.setObjectName(f"{self.group_type}_{option}")  # Присваиваем уникальное имя для каждого элемента
+            label.setObjectName(f"{self.group_type}_{option}")
             label.clicked.connect(
                 lambda opt=option, grp_type=self.group_type: self.select_option(opt, grp_type))
             self.layout.addWidget(label)
@@ -281,7 +281,6 @@ class SubscriptionOptionWidget(QFrame):
         label_time = QLabel("Время занятий", self)
         grid_layout.addWidget(label_time, 4, 0, 1, 2, alignment=Qt.AlignCenter)
 
-        # Шестая строка - Виджет для выбора времени занятий
         self.time_widget = SelectionGroupWidget(self.idd, self.times, "time", self)
         self.time_widget.clicked.connect(self.on_widget_interacted)
         grid_layout.addWidget(self.time_widget, 5, 0, 1, 2)
@@ -344,20 +343,19 @@ class SubscriptionOptionWidget(QFrame):
     def calculate_tariff_price(self, period, k_class, k_time, base_price):
         """Вычисление тарифа в фоновом потоке."""
         try:
-            # Рассчитываем цену через калькулятор
+
             price = self.calculator.calculate_price(period, k_class, k_time, base_price)
             return price
         except Exception as e:
             return None
 
     def eventFilter(self, object, event):
-        # Проверяем, если событие типа MouseButtonPress (клик мыши)
         if isinstance(object, QLineEdit) and event.type() == Qt.ClickFocus:
             if object == self.start_date_input:
                 self.on_widget_interacted()
             elif object == self.end_date_input:
                 self.on_widget_interacted()
-            return False  # Возвращаем False, чтобы событие продолжало выполнение
+            return False
         return super().eventFilter(object, event)
 
     def on_widget_interacted(self, deactivate: bool = False):
@@ -368,7 +366,6 @@ class SubscriptionOptionWidget(QFrame):
             start_date_str = self.start_date_input.text()
             end_date_str = self.end_date_input.text()
 
-            # Проверяем, если введены обе даты, то вычисляем одну из них, если вторая пустая
             if self.start_date_input.hasFocus():
                 print(self, 33434)
                 self.update_end_date(start_date_str)
@@ -378,7 +375,7 @@ class SubscriptionOptionWidget(QFrame):
         # Если это не первый виджет с которым произошло взаимодействие
         if current_active_widget:
             cur_active_widget = current_active_widget
-            # Сбрасываем рамку предыдущего виджета на обычную
+
             if deactivate:
                 iddd = self.idd
                 cur_active_widget = self
@@ -461,7 +458,6 @@ class SubscriptionOptionWidget(QFrame):
             if deactivate:
                 return
 
-        # Меняем цвет рамки текущего виджета
         color = '#75A9A7' if self.idd == 1 else '#D3D700' if self.idd == 2 else '#5DEBE6'
         self.setStyleSheet(f"""
             QFrame#parent_{self.idd}{{
@@ -538,11 +534,9 @@ class SubscriptionOptionWidget(QFrame):
 
         self.time_widget.set_parent_active(True)
 
-        # Обновляем текущий активный виджет
         current_active_widget = self
 
     def update_end_date(self, start_date_str):
-        """Обновляем дату окончания на основе даты начала и выбранного периода."""
         today = QDate.currentDate()
         start_date = QDate.fromString(start_date_str, "dd.MM.yyyy")
         if start_date.isValid():
@@ -576,7 +570,7 @@ class SubscriptionOptionWidget(QFrame):
             print(f"Ошибка при обновлении даты окончания: {e}")
 
     def update_start_date(self, end_date_str):
-        """Обновляем дату начала на основе даты окончания и выбранного периода."""
+
         today = QDate.currentDate()
         end_date = QDate.fromString(end_date_str, "dd.MM.yyyy")
         if end_date.isValid():
@@ -615,24 +609,26 @@ class SelectableLabel(QLabel):
     def __init__(self, text='', font_size: int = 10, font_color: str = 'black', hover_color: str = '#5DEBE6',
                  selected_color: str = '#8DF2F2', border_radius: float = 18, padding: str = '0px'):
         super().__init__(text)
-        self.setMouseTracking(True)  # Включаем отслеживание мыши
+        self.setMouseTracking(True)
         self.font_size_value = font_size
         self.font_color_value = font_color
         self.hover_color_value = hover_color
         self.selected_color_value = selected_color
         self.border_radius_value = border_radius
         self.font_padding_value = padding
-        self.is_selected = False  # Индикатор, выбран ли элемент
+        self.is_selected = False
 
         self.initUI()
 
     def initUI(self):
-        self.setAlignment(Qt.AlignCenter)  # Центрируем текст
+        self.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
+        # self.adjustSize()
+        self.setAlignment(Qt.AlignCenter)
         self.apply_styles()
         self.apply_default_shadow()
 
     def apply_styles(self):
-        """Применяем стили для надписи"""
         selected_border = self.selected_color_value if self.is_selected else self.hover_color_value
         selected_text_color = self.selected_color_value if self.is_selected else self.font_color_value
         self.setStyleSheet(f"""
@@ -647,7 +643,7 @@ class SelectableLabel(QLabel):
         """)
 
     def apply_default_shadow(self):
-        """Применяем стандартную тень"""
+        """стандартная тень"""
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(0)
         shadow.setXOffset(0)
@@ -656,7 +652,7 @@ class SelectableLabel(QLabel):
         self.setGraphicsEffect(shadow)
 
     def apply_hover_shadow(self):
-        """Применяем тень для наведения"""
+        """тень для наведения"""
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(10.9)
         shadow.setXOffset(0)
@@ -665,8 +661,8 @@ class SelectableLabel(QLabel):
         self.setGraphicsEffect(shadow)
 
     def enterEvent(self, event):
-        """При наведении меняем стиль и применяем тень"""
         if not self.is_selected:
+            self.setCursor(Qt.PointingHandCursor)
             self.apply_hover_shadow()
 
             self.setStyleSheet(f"""
@@ -682,25 +678,23 @@ class SelectableLabel(QLabel):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        """При выходе из надписи сбрасываем тень"""
+
         if not self.is_selected:
+            self.unsetCursor()
             self.setCursor(Qt.ArrowCursor)
             self.apply_default_shadow()
             self.apply_styles()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:  # Проверяем, что клик был левым
+        if event.button() == Qt.LeftButton:
             self.clicked.emit()
 
-        """При клике меняем состояние выбранности"""
+
         self.is_selected = not self.is_selected if self.is_selected == False else self.is_selected
         self.apply_styles()
 
-        # Немедленно убираем выделение с других кнопок
         self.deselect_other_labels()
-
-        # Обновляем тень сразу после изменения состояния
         self.apply_shadow()
 
         super().mousePressEvent(event)
@@ -712,15 +706,14 @@ class SelectableLabel(QLabel):
             for label in parent_widget.findChildren(SelectableLabel):
                 if label != self:
                     label.is_selected = False
-                    label.apply_styles()  # Обновляем стиль для снятого выделения
-                    label.apply_shadow()  # Обновляем тень
+                    label.apply_styles()
+                    label.apply_shadow()
 
     def set_selected(self, selected: bool):
-        """Программно выбираем или снимаем выделение"""
+
         self.is_selected = selected
         self.apply_styles()
 
-        # Обновляем тень при программном изменении состояния
         self.apply_shadow()
 
     def apply_shadow(self):
@@ -856,7 +849,6 @@ class SubscriptionWidget(QWidget):
                                 font-size: 18px;
                                 }}""")
 
-        # Проверяем, что даты в правильном формате
         start_date_obj = QDate.fromString(start_date, "dd.MM.yyyy")
         end_date_obj = QDate.fromString(end_date, "dd.MM.yyyy")
 
@@ -973,7 +965,6 @@ class SubscriptionWidget(QWidget):
         try:
             # Проверка, является ли абонемент действительным
             is_valid = self.check_validity(start_date, end_date)
-            # Формируем данные абонемента
             subscription_data = {
                 "tariff": calculator.generate_k_type(
                     current_active_widget.period,
@@ -983,8 +974,7 @@ class SubscriptionWidget(QWidget):
                 "start_date": start_date,
                 "end_date": end_date,
                 "price": current_active_widget.price_label.text(),
-                "count_of_visits": None if "безлимит" in current_active_widget.selected_class_count else int(
-                    current_active_widget.selected_class_count),
+                "visit_ids": [],
                 "is_valid": is_valid
             }
 
@@ -1068,10 +1058,8 @@ class SubscriptionWidget(QWidget):
         """Обработчик закрытия окна."""
         global current_active_widget
 
-        # Проверяем, если окно было закрыто без подтверждения
-        # Отправляем сигнал с None, чтобы родительское окно могло обработать закрытие
+
         if not self.confirmedd:
             self.confirmed.emit(None)
-        # Сбрасываем текущий активный виджет
         current_active_widget = None
         super().closeEvent(event)

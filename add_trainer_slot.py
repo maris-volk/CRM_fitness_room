@@ -13,7 +13,7 @@ from PyQt5.QtCore import Qt
 
 
 class ClientWidget(QWidget):
-    """Виджет клиента."""
+    """виджет клиента."""
     slot_added = pyqtSignal(dict)
 
     def __init__(self, selected_client=None):
@@ -50,10 +50,11 @@ class AddSlotWindow(QWidget):
 
     def __init__(self, selected_client=None, subscription_data=None, existing_slots=None, selected_date=None):
         super().__init__()
+        print(selected_client)
         self.selected_client = selected_client
         self.subscription_data = subscription_data
         self.selected_date = selected_date
-        self.existing_slots = existing_slots or []  # Список [(start_time, end_time)]
+        self.existing_slots = existing_slots or []  # список [(start_time, end_time)]
         self.setGeometry(300, 300, 670, 670)
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -61,7 +62,7 @@ class AddSlotWindow(QWidget):
         self.radius = 18
         self.borderWidth = 5
         self.client_list = []
-        self.confirm_clicked = False  # Флаг для предотвращения авто-коррекции
+        self.confirm_clicked = False
 
         self.init_ui()
 
@@ -69,11 +70,11 @@ class AddSlotWindow(QWidget):
     def init_ui(self):
         main_layout = QVBoxLayout(self)
 
-        # Создание сеточного макета для заголовка и кнопки закрытия
+        # создание сеточного макета для заголовка и кнопки закрытия
         grid_layout = QGridLayout()
 
-        # Заголовок (по центру)
-        title_label = QLabel("Добавление слота", self)  # Убедитесь, что текст корректный
+        # заголовок
+        title_label = QLabel("Добавление слота", self)
         title_label.setObjectName("titleLabel")
         title_label.setStyleSheet("""
                     QLabel {
@@ -86,21 +87,21 @@ class AddSlotWindow(QWidget):
                     }
                 """)
         title_label.setAlignment(Qt.AlignCenter)
-        grid_layout.addWidget(title_label, 0, 1, alignment=Qt.AlignCenter)  # Центрируем внутри ячейки
+        grid_layout.addWidget(title_label, 0, 1, alignment=Qt.AlignCenter)
 
-        # Кнопка закрытия (верхний правый угол)
+        # кнопка закрытия
         close_button = HoverButton("X", 30, 30, 35, '#8F2D31', True, '#8F2D31', 'red', 5, 'red')
         close_button.setObjectName("closeButton")
         close_button.clicked.connect(self.close)
-        grid_layout.addWidget(close_button, 0, 2, alignment=Qt.AlignRight | Qt.AlignTop)  # Выравнивание по правому краю
+        grid_layout.addWidget(close_button, 0, 2, alignment=Qt.AlignRight | Qt.AlignTop)
 
-        # Установка растяжения колонок
-        grid_layout.setColumnStretch(0, 1)  # Левая пустая колонка
-        grid_layout.setColumnStretch(1, 3)  # Центрирующая колонка с заголовком
-        grid_layout.setColumnStretch(2, 1)  # Правая пустая колонка
+        # растяжения колонок
+        grid_layout.setColumnStretch(0, 1)
+        grid_layout.setColumnStretch(1, 3)
+        grid_layout.setColumnStretch(2, 1)
 
         main_layout.addLayout(grid_layout)
-        # Поле поиска
+        # поле поиска
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Поиск...")
         self.search_input.setStyleSheet("""
@@ -119,9 +120,9 @@ class AddSlotWindow(QWidget):
         search_layout.setContentsMargins(10, 5, 10, 5)  # Отступы для строки поиска
         main_layout.addLayout(search_layout)
 
-        # Прокручиваемая область для списка клиентов
+        # область для списка клиентов
         self.scroll_area = QScrollArea()
-        self.scroll_area.setObjectName('scroll_clients')  # Используем единый objectName
+        self.scroll_area.setObjectName('scroll_clients')
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -154,9 +155,9 @@ class AddSlotWindow(QWidget):
         self.client_layout.setObjectName('clients_content_layout')
         self.scroll_area.setWidget(self.client_container)
 
-        # Метка для информации о выбранном клиенте
-        if self.selected_client:
-            formatted_client = self.format_client_data(self.selected_client)
+        # метка для информации о выбранном клиенте
+        if self.selected_client and self.subscription_data:
+            formatted_client = self.format_client_data(self.selected_client,self.subscription_data)
             self.selected_client = formatted_client
             self.client_info_label = QLabel(
                 f"Выбран клиент:<br><span style='color:#75A9A7; font-weight:500'>{self.selected_client['name']}</span> ({self.selected_client['phone']})"
@@ -173,10 +174,8 @@ class AddSlotWindow(QWidget):
         """)
         main_layout.addWidget(self.client_info_label)
 
-        # Поля ввода времени
         time_layout = QHBoxLayout()
 
-        # Время начала
         start_time_label = QLabel("Время начала:", self)
         start_time_label.setStyleSheet("""
             font-family: 'Unbounded';
@@ -189,8 +188,6 @@ class AddSlotWindow(QWidget):
         self.start_time_input.setObjectName("start_time_input")
 
 
-
-        # Время конца
         end_time_label = QLabel("Время конца:", self)
         end_time_label.setStyleSheet("""
             font-family: 'Unbounded';
@@ -206,10 +203,8 @@ class AddSlotWindow(QWidget):
         self.end_time_input.textChanged.connect(lambda: self.validate_partial_input("end"))
         self.start_time_input.textChanged.connect(self.on_time_input_changed)
         self.end_time_input.textChanged.connect(self.on_time_input_changed)
-        # Подключение textChanged для мгновенной валидации
 
 
-        # Установка стилей для полей ввода
         for input_field in [self.start_time_input, self.end_time_input]:
             input_field.setStyleSheet("""
 
@@ -222,41 +217,33 @@ class AddSlotWindow(QWidget):
                 border-width: 0px 0px 2.7px 2.7px;
             """)
 
-        # Добавление меток и полей ввода в лейаут
         time_layout.addWidget(start_time_label)
         time_layout.addWidget(self.start_time_input)
         time_layout.addWidget(end_time_label)
         time_layout.addWidget(self.end_time_input)
         main_layout.addLayout(time_layout)
 
-        # Кнопка подтверждения
         confirm_button = HoverButton("Подтвердить", 200, 50, 18, '#53d0cc', False, '#53d0cc', '', 12, '')
 
-        # Spacer для отступа сверху кнопки
         top_spacer = QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding)
 
-        # Spacer для отступа снизу кнопки
         bottom_spacer = QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding)
 
-        # Добавляем spacer перед кнопкой
         main_layout.addItem(top_spacer)
 
-        # Добавляем кнопку в центр
         main_layout.addWidget(confirm_button, alignment=Qt.AlignCenter)
 
-        # Добавляем spacer после кнопки
         main_layout.addItem(bottom_spacer)
-        confirm_button.pressed.connect(self.on_confirm_pressed)  # Подключаем сигнал pressed
+        confirm_button.pressed.connect(self.on_confirm_pressed)
 
         confirm_button.clicked.connect(self.confirm_slot)
 
 
-        # Загрузка клиентов
         self.load_clients(self.selected_date)
 
 
     def on_time_input_changed(self):
-        """Обрабатывает изменение времени в любом из полей."""
+        """изменение времени в любом из полей."""
         self.start_time_input.blockSignals(True)
         self.end_time_input.blockSignals(True)
         try:
@@ -271,19 +258,19 @@ class AddSlotWindow(QWidget):
             self.end_time_input.blockSignals(False)
 
     def update_end_time(self, start_time_str):
-        """Обновляет время окончания на основе времени начала."""
+        """обновляет время окончания на основе времени начала."""
         start_time = QTime.fromString(start_time_str, "hh:mm")
         if not start_time.isValid():
             self.end_time_input.setText("")
             return
 
-        # Добавляем 45 минут к времени начала
+        # добавление 45 минут
         if start_time < QTime(8, 0):
             start_time = QTime(8, 0)
             self.start_time_input.setText(start_time.toString("hh:mm"))
 
         end_time = start_time.addSecs(45 * 60)
-        # Ограничиваем время окончания 22:00
+
         if end_time > QTime(22, 0):
             end_time = QTime(22, 0)
             if start_time > QTime(21, 15):
@@ -291,7 +278,7 @@ class AddSlotWindow(QWidget):
         self.end_time_input.setText(end_time.toString("hh:mm"))
 
     def validate_times(self, field):
-        """Проверяет и корректирует введенное время в зависимости от поля."""
+        """проверка и корректировка введенного время в зависимости от поля."""
 
         def correct_time(input_text, default_time):
             time = QTime.fromString(input_text, "hh:mm")
@@ -349,7 +336,7 @@ class AddSlotWindow(QWidget):
             self.end_time_input.setText(end_time.toString("hh:mm"))
 
     def update_start_time(self, end_time_str):
-        """Обновляет время начала на основе времени окончания."""
+        """обновление время начала на основе времени окончания."""
         end_time = QTime.fromString(end_time_str, "hh:mm")
         if not end_time.isValid():
             self.start_time_input.setText("")
@@ -359,9 +346,9 @@ class AddSlotWindow(QWidget):
             end_time = QTime(22, 0)
             self.end_time_input.setText(end_time.toString("hh:mm"))
 
-        # Вычитаем 45 минут из времени окончания
+        # - 45 минут
         start_time = end_time.addSecs(-45 * 60)
-        # Ограничиваем время начала 8:00
+        # время начала 8:00
         if start_time < QTime(8, 0):
             start_time = QTime(8, 0)
             if end_time < QTime(8, 45):
@@ -371,15 +358,24 @@ class AddSlotWindow(QWidget):
 
 
 
-    def format_client_data(self, client_data):
+    def format_client_data(self, client_data, sub_data = None):
         """Приводит данные клиента к ожидаемому формату."""
-        return {
-            "name": f"{client_data.get('last_name', '')} {client_data.get('first_name', '')}".strip(),
-            "phone": client_data.get('phone_number', 'Не указан'),
-        }
+        if sub_data:
+
+            return {
+                "client_id":client_data.get('client_id', None),
+                "name": f"{client_data.get('last_name', '')} {client_data.get('first_name', '')}".strip(),
+                "phone": client_data.get('phone_number', 'Не указан'),
+                "tariff":sub_data.get('tariff', ''),
+            }
+        else:
+            return {
+                "name": f"{client_data.get('last_name', '')} {client_data.get('first_name', '')}".strip(),
+                "phone": client_data.get('phone_number', 'Не указан'),
+            }
 
     def on_confirm_pressed(self):
-        """Устанавливает флаг при нажатии кнопки подтверждения."""
+        """устанавливает флаг при нажатии кнопки подтверждения."""
         self.confirm_clicked = True
 
     def validate_partial_input(self, field):
@@ -415,12 +411,12 @@ class AddSlotWindow(QWidget):
             WHERE 
                 s.is_valid = TRUE
                 AND s.valid_until >= %s
+                AND (s.frozen_from IS NULL OR s.frozen_until IS NULL OR %s NOT BETWEEN s.frozen_from AND s.frozen_until)
             GROUP BY 
                 c.client_id, c.first_name, c.surname, c.phone_number, s.tariff, s.is_valid, s.valid_until
         """
-        # Выполняем запрос с передачей выбранной даты дважды (для `start_time` и `valid_until`)
-        result = execute_query(query, (selected_date, selected_date))
-        # Обработка результата
+        result = execute_query(query, (selected_date, selected_date, selected_date))
+
         self.client_list = []
         if result:
             for row in result:
@@ -433,7 +429,7 @@ class AddSlotWindow(QWidget):
                     "valid_until": row[6]
                 })
 
-        # Обновляем виджет списка клиентов
+        # обновляем виджет списка клиентов
         self.update_client_list(self.client_list)
 
     def update_client_list(self, clients):
@@ -467,9 +463,9 @@ class AddSlotWindow(QWidget):
 
     def select_client(self, client):
         self.selected_client = client
-        # Устанавливаем только имя и фамилию в строку поиска
+        # только имя и фамилию в строку поиска
         self.search_input.setText(f"{client['name']}")
-        # Обновляем метку информации о клиенте с цветом имени
+        # метка информации о клиенте с цветом имени
         self.client_info_label.setText(
             f"Выбран клиент:<br><span style='color:#75A9A7; font-weight:500'>{client['name']}</span> ({client['phone']})"
         )
@@ -478,21 +474,21 @@ class AddSlotWindow(QWidget):
         start_time = self.start_time_input.text()
         end_time = self.end_time_input.text()
 
-        # Проверка, выбран ли клиент
+        # выбран ли клиент
         if not self.selected_client:
             QMessageBox.warning(self, "Ошибка", "Клиент не выбран.")
             self.confirm_clicked = False  # Сброс флага
             return
 
-        formatted_client = self.format_client_data(self.selected_client)
+        formatted_client = self.format_client_data(self.selected_client,self.subscription_data)
 
-        # Проверка, что поля времени заполнены
+        # поля времени заполнены
         if not start_time or not end_time:
             QMessageBox.warning(self, "Ошибка", "Укажите время начала и конца.")
             self.confirm_clicked = False  # Сброс флага
             return
 
-        # Проверка корректности введённых времён
+        # проверка корректности введённых времён
         start_qtime = QTime.fromString(start_time, "hh:mm")
         end_qtime = QTime.fromString(end_time, "hh:mm")
 
@@ -501,7 +497,7 @@ class AddSlotWindow(QWidget):
             self.confirm_clicked = False  # Сброс флага
             return
 
-        # Дополнительная проверка: время начала должно быть меньше времени конца
+        # время начала должно быть меньше времени конца
         if start_qtime >= end_qtime:
             QMessageBox.warning(self, "Ошибка", "Время начала должно быть меньше времени конца.")
             self.confirm_clicked = False  # Сброс флага
@@ -512,7 +508,7 @@ class AddSlotWindow(QWidget):
                 QMessageBox.warning(self, "Ошибка", "Время слота пересекается с другим слотом.")
                 return
 
-            # Проверка ограничений абонемента
+            # проверка ограничений абонемента
         print(self.subscription_data)
         if self.subscription_data:
             tariff = self.subscription_data.get("tariff", "unlim_unlim_mnth")
@@ -534,40 +530,28 @@ class AddSlotWindow(QWidget):
         self.close()
 
     def can_add_slot(self, client, start_time, end_time):
-        """
-        Проверяет, можно ли добавить слот для клиента.
-        :param client: Данные выбранного клиента.
-        :param start_time: Время начала слота (QTime).
-        :param end_time: Время конца слота (QTime).
-        :param slot_date: Дата, для которой добавляется слот (datetime.date).
-        :return: True, если слот можно добавить, иначе False.
-        """
+
+        print(client)
         client_id = client["client_id"]
         tariff = client["tariff"]
 
-        # Проверка на тип абонемента
-        if "unlim" not in tariff:  # Если абонемент не безлимитный
-            # Запрос на проверку количества слотов клиента на указанную дату
+        # проверка на тип абонемента
+        if "8" in tariff or "12" in tariff:  # Если абонемент не безлимитный
+            # проверка количества слотов клиента на указанную дату
             query = """
                 SELECT COUNT(*)
                 FROM training_slots
                 WHERE client = %s AND start_time::date = %s
             """
             slot_count = execute_query(query, (client_id, self.selected_date))[0][0]
-            if slot_count >= 1:  # Если уже есть один слот
+            if slot_count >= 1:
                 QMessageBox.warning(self, "Ошибка", "Абонемент позволяет только один слот в день.")
                 return False
 
         return True
 
     def is_time_within_tariff(self, tariff, start_time, end_time):
-        """
-        Проверяет, находится ли время в пределах допустимого для указанного тарифа.
-        :param tariff: Название тарифа (например, "12_mrn_mnth").
-        :param start_time: Время начала слота (QTime).
-        :param end_time: Время окончания слота (QTime).
-        :return: True, если время допустимо, иначе False.
-        """
+
         if "mrn" in tariff:
             return start_time < QTime(16, 0) and end_time <= QTime(16, 0)
         elif "evn" in tariff:
@@ -584,19 +568,19 @@ class AddSlotWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Прямоугольник окна
+        # прямоугольник окна
         rect = QRectF(0, 0, self.width(), self.height())
 
-        # Устанавливаем цвет границы
+        # цвет границы
         borderPen = QPen(QColor(117, 169, 167))
         borderPen.setWidth(self.borderWidth)
         painter.setPen(borderPen)
 
-        # Устанавливаем цвет фона
+        # цвет фона
         backgroundBrush = QColor(255, 255, 255)
         painter.setBrush(backgroundBrush)
 
-        # Отрисовка закругленных углов
+        # отрисовка закругленных углов
         if self.radius > 0:
             painter.drawRoundedRect(rect, self.radius, self.radius)
         else:

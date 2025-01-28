@@ -23,10 +23,10 @@ import psycopg2  # Для подключения к базе данных Postgr
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, \
     QGraphicsDropShadowEffect, QSpacerItem, QTableWidgetItem, QLineEdit, QTableWidget, QHeaderView, QListWidget, \
-    QSizePolicy
+    QSizePolicy, QMenu, QAction, QWidgetAction
 from PyQt5.QtChart import QChartView, QBarSeries, QBarSet, QChart, QBarCategoryAxis, QValueAxis
-from PyQt5.QtCore import Qt, QMargins, QDir, pyqtSignal, QThread, QSettings
-from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QFontDatabase, QPixmap
+from PyQt5.QtCore import Qt, QMargins, QDir, pyqtSignal, QThread, QSettings, QRectF, QPointF
+from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QFontDatabase, QPixmap, QPainterPath, QRegion, QCursor
 from PyQt5.QtCore import QTimer
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -37,6 +37,145 @@ from database import connect_to_db
 
 
 logger = logging.getLogger(__name__)
+class RoundedMenu(QMenu):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFont(QFont("Unbounded", 10))  # Устанавливаем шрифт
+        self.radius = 10  # Радиус закругления углов
+        self.setStyleSheet(f"""
+            QMenu {{
+                background: white;
+                border: 2px solid #05A9A3;
+                border-top-left-radius: 0px;  
+                border-top-right-radius: 0px;  
+                border-bottom-left-radius: {self.radius}px;
+                border-bottom-right-radius: {self.radius}px;
+                padding: 5px;
+            }}
+        """)
+
+    def add_colored_action(self, text, color, callback):
+        """
+        Создает пункт меню с собственной шириной, зависящей только от его содержимого.
+        """
+        action_widget = HoverLabel(text, color, callback, self)
+
+        widget_action = QWidgetAction(self)
+        widget_action.setDefaultWidget(action_widget)
+        self.addAction(widget_action)
+
+        # Устанавливаем минимальную ширину по максимальному содержимому
+        action_width = action_widget.sizeHint().width() + 20  # Немного добавляем отступ
+        if action_width > self.width():
+            self.setMinimumWidth(action_width)
+
+    def resizeEvent(self, event):
+        """
+        Устанавливает форму меню с закругленными углами снизу и прямым верхом.
+        """
+        path = QPainterPath()
+        rect = QRectF(self.rect()).adjusted(0, 0, -1, -1)  # Убираем 1px для устранения выступов
+        radius = self.radius
+
+        # Создаем путь с закругленными только нижними углами
+        path.moveTo(rect.topLeft())
+        path.lineTo(rect.topRight())
+        path.lineTo(rect.bottomRight().x(), rect.bottomRight().y() - radius)
+        path.quadTo(rect.bottomRight(), rect.bottomRight() - QPointF(radius, 0))
+        path.lineTo(rect.bottomLeft().x() + radius, rect.bottomLeft().y())
+        path.quadTo(rect.bottomLeft(), rect.bottomLeft() - QPointF(0, radius))
+        path.lineTo(rect.topLeft())
+
+        # Применяем маску для закругленных углов
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+
+    def enterEvent(self, event):
+        """
+        Устанавливает флаг, что курсор наведён на меню.
+        """
+        self.parent().hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """
+        Устанавливает флаг, что курсор покинул меню.
+        """
+
+        self.parent().hovered = False
+        super().leaveEvent(event)
+
+
+class HoverLabel(QWidget):
+    """
+    Кастомный пункт меню, который занимает минимально возможное место в ширину,
+    сохраняет нормальную высоту, меняет курсор только при наведении на текст
+    и подсвечивается при наведении.
+    """
+
+    def __init__(self, text, color, callback, parent=None):
+        super().__init__(parent)
+        self.callback = callback
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)  # Отступы для комфортной высоты
+        layout.setSpacing(0)
+
+        self.label = QLabel(text)
+        self.label.setFont(QFont("Unbounded", 12))
+        self.label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self.label.setCursor(QCursor(Qt.PointingHandCursor))  # Курсор меняется только на тексте
+        self.label.setAlignment(Qt.AlignCenter)
+
+        layout.addWidget(self.label)
+        self.setLayout(layout)
+
+        self.setGraphicsEffect(self.create_shadow_effect())
+        self.graphicsEffect().setEnabled(False)
+
+        self.label.mousePressEvent = self.mousePressEvent  # Привязываем событие клика к лейблу
+
+    def create_shadow_effect(self):
+        """
+        Создаёт эффект свечения при наведении.
+        """
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(10)  # Радиус размытия
+        shadow.setXOffset(0)  # Смещение по X
+        shadow.setYOffset(0)  # Смещение по Y
+        shadow.setColor(QColor(5, 169, 163, 100))  # Полупрозрачный цвет свечения
+        return shadow
+
+    def enterEvent(self, event):
+        """
+        Активирует свечение при наведении.
+        """
+        self.graphicsEffect().setEnabled(True)
+
+    def leaveEvent(self, event):
+        """
+        Отключает свечение при уходе курсора.
+        """
+        self.graphicsEffect().setEnabled(False)
+
+    def mousePressEvent(self, event):
+        """
+        Выполняет действие при нажатии (если кликнули по тексту).
+        """
+        if self.callback:
+            self.callback()
+
+
+class ClickableLabel(QLabel):
+    # Создаем сигнал, который будет срабатывать при клике на метку
+    clicked = pyqtSignal()
+
+    def __init__(self, text='', parent=None):
+        super().__init__(text, parent)
+
+    def mousePressEvent(self, event):
+        # При клике на метку генерируется сигнал
+        self.clicked.emit()
 
 
 class WorkerThread(QThread):

@@ -130,10 +130,9 @@ class LoginWidget(QDialog):
         self.auth_thread.start()
 
     def handle_authentication_result(self, result):
-        user_id, role = result  # Распаковываем кортеж, возвращаемый authenticate_user
+        user_id, role = result
         print(role)
         if user_id:
-            # Если аутентификация успешна, сохраняем user_id и роль
             self.current_user_id = user_id
             self.role = role
             self.login_button.set_border_color("#00FF00")
