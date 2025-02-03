@@ -75,6 +75,38 @@ def execute_query(query, params=None, fetch=True, fetch_one=False):
             connection_pool.putconn(conn)
             logger.info(f"Соединение возвращено в пул: {id(conn)}")
 
+
+def check_card_in_database(card_number):
+    """Проверяет, существует ли карта с данным номером в базе данных, уже привязанная к другому клиенту."""
+    query = """
+        SELECT client_id FROM public.client
+        WHERE member_card = %s
+    """
+    result = execute_query(query, (card_number,), fetch=True, fetch_one=True)
+
+    if result:
+        return True  # Карта уже привязана к другому клиенту
+    else:
+        return False  # Карта свободна
+
+
+# Добавление карты клиенту
+def add_card_to_user(card_number, client_id):
+    """Добавляет карту к клиенту."""
+    update_query = """
+        UPDATE public.client
+        SET member_card = %s
+        WHERE client_id = %s
+    """
+    result = execute_query(update_query, (client_id,  card_number), fetch=False)
+
+    if result is not None:
+        print(f"Карта {card_number} успешно добавлена клиенту с ID {client_id}.")
+        return True
+    else:
+        print(f"Ошибка при добавлении карты {card_number} клиенту с ID {client_id}.")
+        return False
+
 def count_all_trainers():
     """
     Подсчитывает общее количество тренеров в базе данных.
@@ -94,6 +126,57 @@ def count_all_trainers():
         return 0
 
 
+
+def fetch_visit_history(client_id):
+    query = """
+    SELECT 
+        TO_CHAR(v.time_start, 'DD.MM.YY') AS date,
+        TO_CHAR(v.time_start, 'HH24:MI') || ' - ' || TO_CHAR(v.time_end, 'HH24:MI') AS time,
+        CASE 
+            WHEN s.tariff IS NOT NULL THEN 'По абонементу'
+            ELSE 'Разовое посещение'
+        END AS type,
+        CASE 
+            WHEN s.tariff IS NOT NULL AND s.tariff != 'one_time' THEN 
+                TO_CHAR(s.valid_since, 'DD.MM.YY') || ' - ' || TO_CHAR(s.valid_until, 'DD.MM.YY')
+            ELSE ''
+        END AS period
+    FROM visit_fitness_room v
+    LEFT JOIN client c ON v.client = c.client_id
+    LEFT JOIN subscription s ON c.subscription = s.subscription_id
+    WHERE v.client = %s
+    ORDER BY v.time_start DESC;
+    """
+    return execute_query(query, (client_id,))
+
+
+def check_admin_username_in_database(username):
+    """
+    Проверяет, существует ли администратор с данным логином.
+    """
+    query = "SELECT user_id FROM users WHERE username = %s;"
+    result = execute_query(query, (username,))
+    return result[0][0] if result else None
+
+
+def check_trainer_phone_in_database(phone_number):
+    """
+    Проверяет, существует ли тренер с данным номером телефона.
+    """
+    query = "SELECT trainer_id FROM trainer WHERE phone_number = %s;"
+    result = execute_query(query, (phone_number,))
+    return result[0][0] if result else None
+
+
+def check_admin_phone_in_database(phone_number):
+    """
+    Проверяет, существует ли администратор с данным номером телефона.
+    """
+    query = "SELECT admin_id FROM administrators WHERE phone_number = %s;"
+    result = execute_query(query, (phone_number,))
+    return result[0][0] if result else None
+
+
 def get_schedule_for_week(trainer_id, start_date, end_date):
     """
     Получает расписание тренера за неделю.
@@ -101,9 +184,11 @@ def get_schedule_for_week(trainer_id, start_date, end_date):
     logger.info(f"Запрос расписания для тренера {trainer_id}: {start_date} - {end_date}")
     query = """
         SELECT 
+            ts.slot_id, 
             ts.start_time::date AS day_date,
             ts.start_time,
             ts.end_time,
+            c.client_id,  
             c.first_name || ' ' || c.surname AS client_name
         FROM 
             training_slots ts
@@ -114,16 +199,20 @@ def get_schedule_for_week(trainer_id, start_date, end_date):
     """
     result = execute_query(query, (trainer_id, start_date, end_date))
     logger.info(f"Получено {len(result) if result else 0} записей для тренера {trainer_id}")
+
     if result:
         schedule_by_day = {}
         for row in result:
-            day_date = row[0]
+            slot_id = row[0]
+            day_date = row[1]
             if day_date not in schedule_by_day:
                 schedule_by_day[day_date] = []
             schedule_by_day[day_date].append({
-                "start_time": row[1],
-                "end_time": row[2],
-                "client": row[3]
+                "slot_id": slot_id,  # Теперь сохраняем slot_id
+                "start_time": row[2],
+                "end_time": row[3],
+                "client_id": row[4],
+                "client": row[5]
             })
         return schedule_by_day
     return {}
@@ -160,6 +249,52 @@ def add_user_to_db(surname, first_name, patronymic, phone_number):
     except Exception as e:
         logger.error(f"Ошибка при добавлении пользователя: {e}, Query: {query}, Params: {params}")
         return None
+def get_client_id_by_card(card_number):
+    query = "SELECT client_id FROM public.client WHERE member_card = %s"
+    result = execute_query(query, (card_number,), fetch_one=True)
+    return result[0] if result else None
+
+
+def get_subscription_info(client_id):
+    query = """
+        SELECT s.subscription_id, s.tariff, s.valid_since, s.valid_until, s.is_valid, s.visit_ids
+        FROM public.subscription s
+        JOIN public.client c ON c.subscription = s.subscription_id
+        WHERE c.client_id = %s
+    """
+    result = execute_query(query, (client_id,), fetch_one=True)
+    return result if result else None
+
+
+def check_today_visits(client_id):
+    query = "SELECT visit_id FROM public.visit_fitness_room WHERE client = %s AND time_start::date = CURRENT_DATE"
+    result = execute_query(query, (client_id,), fetch=True)
+    return result if result else None
+
+
+def register_visit(client_id, subscription_id):
+    """Фиксируем вход/выход в зал"""
+    query_check = "SELECT visit_id, in_gym FROM public.visit_fitness_room WHERE client = %s AND in_gym = TRUE"
+    result = execute_query(query_check, (client_id,), fetch_one=True)
+
+    if result:
+        visit_id = result[0]
+        query_exit = "UPDATE public.visit_fitness_room SET time_end = NOW(), in_gym = FALSE WHERE visit_id = %s"
+        execute_query(query_exit, (visit_id,), fetch=False)
+    else:
+        query_entry = "INSERT INTO public.visit_fitness_room (client, time_start, in_gym) VALUES (%s, NOW(), TRUE) RETURNING visit_id"
+        visit_id = execute_query(query_entry, (client_id,), fetch_one=True)[0]
+
+        query_update_subscription = "UPDATE public.subscription SET visit_ids = array_append(visit_ids, %s) WHERE subscription_id = %s"
+        execute_query(query_update_subscription, (visit_id, subscription_id), fetch=False)
+
+    return visit_id
+
+
+def deactivate_subscription(subscription_id):
+    """Делаем абонемент неактивным"""
+    query = "UPDATE public.subscription SET is_valid = FALSE WHERE subscription_id = %s"
+    execute_query(query, (subscription_id,), fetch=False)
 
 
 def add_subscription_to_existing_user(user_id, subscription_data):
@@ -219,6 +354,7 @@ def add_subscription_to_existing_user(user_id, subscription_data):
     except Exception as e:
         logger.error(f"Ошибка при добавлении абонемента: {e}")
         return None
+
 
 # def add_subscription_to_existing_user(user_id, subscription_data):
 #     from datetime import datetime
@@ -318,7 +454,7 @@ def freeze_subscription(subscription_id, freeze_start, freeze_end):
         # Перерасчёт времени заморозки и актуальной даты окончания
         if frozen_from and frozen_until:
             frozen_period = (
-                        datetime.strptime(frozen_until, "%Y-%m-%d") - datetime.strptime(frozen_from, "%Y-%m-%d")).days
+                    datetime.strptime(frozen_until, "%Y-%m-%d") - datetime.strptime(frozen_from, "%Y-%m-%d")).days
             new_valid_until = datetime.strptime(valid_until, "%Y-%m-%d") + datetime.timedelta(days=frozen_period)
         else:
             # Если не было заморозки, то просто обновляем поле для новой заморозки
@@ -416,6 +552,38 @@ def get_schedule_data_with_hash(trainer_id, start_date, end_date):
 
     return db_hash, schedule_data
 
+def get_all_admins():
+    """
+    Возвращает список всех администраторов из базы данных, исключая тех, у кого роль 'managing_director'.
+    Включает логин, пароль и описание администратора.
+    :return: Список словарей с информацией об администраторах.
+    """
+    query = """
+        SELECT a.admin_id, a.first_name, a.surname, a.patronymic, a.phone_number, a.photo, a.description, u.username, u.password_hash, u.user_id
+        FROM administrators a
+        JOIN users u ON a.user_id = u.user_id
+        WHERE u.role != 'managing_director';
+    """
+    try:
+        result = execute_query(query)
+        if result:
+            return [{
+                "admin_id": row[0],
+                "first_name": row[1],
+                "surname": row[2],
+                "patronymic": row[3],
+                "phone_number": row[4],
+                "photo": row[5],  # Байтовое изображение
+                "description": row[6],  # Описание администратора
+                "username": row[7],
+                "password_hash": row[8],
+                "user_id": row[9],
+            } for row in result]
+        return []
+    except Exception as e:
+        print(f"Ошибка в get_all_admins: {e}")
+        traceback.print_exc()
+        return []
 
 def get_all_trainers():
     """
@@ -424,7 +592,7 @@ def get_all_trainers():
     """
     print("get_all_trainers: старт функции")
     query = """
-        SELECT trainer_id, first_name, surname, photo
+        SELECT trainer_id, first_name, surname, photo, description, phone_number, patronymic
         FROM trainer;
     """
     try:
@@ -437,7 +605,11 @@ def get_all_trainers():
                 trainers.append({
                     "id": row[0],
                     "name": f"{row[1]}",
-                    "image": row[3]  # Байтовое изображение
+                    "surname": f"{row[2]}",
+                    "image": row[3],  # Байтовое изображение
+                    "description": f"{row[4]}",
+                    "phone": f"{row[5]}",
+                    "patronymic": f"{row[6]}"
                 })
             print(f"get_all_trainers: список тренеров - {trainers}")
             return trainers
@@ -477,12 +649,24 @@ def authenticate_user(username, password):
     """
     params = (username,)
     result = execute_query(query, params)
+
     if result:
         user_id, stored_hash, role = result[0]
+
+        # Проверяем, является ли stored_hash hex-строкой
+        if stored_hash.startswith("\\x"):
+            # Декодируем hex-строку в текстовый формат
+            try:
+                stored_hash = bytes.fromhex(stored_hash.replace("\\x", "")).decode('utf-8')
+            except (ValueError, UnicodeDecodeError):
+                # Если декодирование не удалось, считаем хэш некорректным
+                return None, None
+
+        # Проверяем пароль
         if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
             return user_id, role
-    return None, None
 
+    return None, None
 
 def close_pool():
     """
@@ -562,7 +746,7 @@ def get_duty_trainers():
     Возвращает список тренеров на смене.
     """
     query = """
-        SELECT 
+        SELECT DISTINCT
             t.trainer_id, 
             t.surname, 
             t.first_name, 
@@ -575,7 +759,7 @@ def get_duty_trainers():
         JOIN 
             training_slots ts ON t.trainer_id = ts.trainer
         WHERE 
-            NOW() BETWEEN ts.start_time AND ts.end_time;
+            NOW() BETWEEN COALESCE(ts.start_time, NOW()) AND COALESCE(ts.end_time, NOW());
     """
     result = execute_query(query)
     if result is None:
@@ -636,159 +820,123 @@ def end_attendance(visit_id):
         logger.info(f"Посещение ID {visit_id} успешно завершено")
 
 
-def get_max_visitors_per_hour(start_date, end_date):
+def get_max_visitors_per_hour(start_date):
     """
-    Возвращает количество посетителей по часам за указанный период.
+    Возвращает максимальное количество людей за день в интервалах 2 часа (08-10, 10-12 ... 20-22).
     """
+    start_datetime = datetime.datetime.combine(start_date, datetime.time(0, 0, 0))  # 00:00:00
+    end_datetime = datetime.datetime.combine(start_date, datetime.time(23, 59, 59))  # 23:59:59
+
     query = """
-        SELECT
+        SELECT 
             EXTRACT(HOUR FROM time_start) AS hour,
-            COUNT(*) AS visitor_count
+            COUNT(DISTINCT client) AS visitor_count
         FROM visit_fitness_room
         WHERE time_start BETWEEN %s AND %s
         GROUP BY EXTRACT(HOUR FROM time_start)
         ORDER BY hour
     """
-    results = execute_query(query, (start_date, end_date))
+    results = execute_query(query, (start_datetime, end_datetime))
+
+    # Создаём интервалы по 2 часа с 08:00 до 22:00
+    visitors_per_hour = OrderedDict({f"{h:02d}-{h + 2:02d}": 0 for h in range(8, 22, 2)})
+
     if results:
-        # Создаём упорядоченный словарь для часов
-        visitors_per_hour = OrderedDict()
         for row in results:
             hour = int(row[0])
             count = row[1]
-            # Форматируем часы в виде "08-10", "10-12" и т.д.
-            next_hour = hour + 2
-            if next_hour > 23:
-                next_hour = 23
-            visitors_per_hour[f"{hour:02d}-{next_hour:02d}"] = count
-        return visitors_per_hour
-    else:
-        logger.error("Нет данных для посетителей по часам")
-        return {}
+            # Определяем в какой 2-часовой интервал попадает запись
+            interval = f"{hour//2*2:02d}-{hour//2*2+2:02d}"
+            if interval in visitors_per_hour:
+                visitors_per_hour[interval] += count
 
+    return visitors_per_hour
 
 def get_average_visitors_per_weekday(start_date, end_date):
     """
-    Возвращает среднее количество посетителей по дням недели за указанный период.
+    Возвращает среднее количество посещений по дням недели (Пн-Вс) за указанный период.
     """
     query = """
-        SELECT
-            TRIM(TO_CHAR(time_start, 'Day')) AS weekday,
-            COUNT(*) AS visitor_count
+        SELECT 
+            EXTRACT(DOW FROM time_start) AS weekday, 
+            COUNT(client) / COUNT(DISTINCT DATE(time_start)) AS avg_visitors
         FROM visit_fitness_room
         WHERE time_start BETWEEN %s AND %s
-        GROUP BY TRIM(TO_CHAR(time_start, 'Day'))
-        ORDER BY 
-            CASE TRIM(TO_CHAR(time_start, 'Day'))
-                WHEN 'Monday' THEN 1
-                WHEN 'Tuesday' THEN 2
-                WHEN 'Wednesday' THEN 3
-                WHEN 'Thursday' THEN 4
-                WHEN 'Friday' THEN 5
-                WHEN 'Saturday' THEN 6
-                WHEN 'Sunday' THEN 7
-            END
+        GROUP BY EXTRACT(DOW FROM time_start)
+        ORDER BY weekday
     """
     results = execute_query(query, (start_date, end_date))
+
+    day_counts = {i: 0 for i in range(7)}  # 0 - воскресенье, 6 - суббота
+
     if results:
-        # Создаём словарь для подсчёта количества дней
-        day_counts = {}
         for row in results:
-            weekday = row[0].strip()
-            count = row[1]
-            day_counts[weekday] = count
+            weekday = int(row[0])
+            avg_count = row[1]
+            day_counts[weekday] = round(avg_count, 2)
 
-        # Вычисляем количество недель в периоде
-        total_days = (end_date - start_date).days + 1
-        total_weeks = total_days / 7
-
-        average_visitors = {day: count / total_weeks for day, count in day_counts.items()}
-
-        # Упорядочиваем по стандартному порядку недели
-        weekdays_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        ordered_average_visitors = OrderedDict()
-        for day in weekdays_order:
-            ordered_average_visitors[day] = round(average_visitors.get(day, 0), 2)
-        return ordered_average_visitors
-    else:
-        logger.error("Нет данных для средних посетителей по дням недели")
-        return {}
+    weekdays_order = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб']
+    return OrderedDict((weekdays_order[i], day_counts[i]) for i in range(7))
 
 
 def get_average_visitors_per_week_in_month(month, year):
     """
-    Возвращает количество посетителей по неделям внутри указанного месяца и года.
-    Неделя 1: дни 1-7
-    Неделя 2: дни 8-14
-    Неделя 3: дни 15-21
-    Неделя 4: дни 22-28
-    Неделя 5: дни 29-end
+    Возвращает среднее количество посещений по неделям в месяце.
     """
     start_date = datetime.date(year, month, 1)
-    if month == 12:
-        end_date = datetime.date(year + 1, 1, 1) - datetime.timedelta(days=1)
-    else:
-        end_date = datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
+    end_date = (start_date.replace(day=28) + datetime.timedelta(days=4)).replace(day=1) - datetime.timedelta(days=1)
 
     query = """
-        SELECT
-            FLOOR((EXTRACT(day FROM time_start) - 1) / 7) + 1 AS week_number,
-            COUNT(*) AS visitor_count
+        SELECT 
+            FLOOR((EXTRACT(DAY FROM time_start) - 1) / 7) + 1 AS week_number,
+            COUNT(client) / COUNT(DISTINCT DATE(time_start)) AS avg_visitors
         FROM visit_fitness_room
         WHERE time_start BETWEEN %s AND %s
         GROUP BY week_number
         ORDER BY week_number
     """
     results = execute_query(query, (start_date, end_date))
+
+    num_weeks = ((end_date.day - 1) // 7) + 1
+    week_visitors = {f"Нед {i}": 0 for i in range(1, num_weeks + 1)}
+
     if results:
-        week_visitors = OrderedDict()
         for row in results:
             week = int(row[0])
-            count = row[1]
-            week_visitors[f"Week {week}"] = count
-        return week_visitors
-    else:
-        logger.error("Нет данных для посетителей по неделям месяца")
-        return {}
+            avg_count = row[1]
+            week_visitors[f"Нед {week}"] = round(avg_count, 2)
+
+    return OrderedDict(week_visitors)
 
 
 def get_average_visitors_per_month(year):
     """
-    Возвращает среднее количество посетителей по месяцам за указанный год.
+    Возвращает среднее количество посещений по месяцам за год.
     """
     query = """
-        SELECT
-            TO_CHAR(time_start, 'Month') AS month,
-            COUNT(*) AS visitor_count
+        SELECT 
+            EXTRACT(MONTH FROM time_start) AS month,
+            COUNT(client) / COUNT(DISTINCT DATE(time_start)) AS avg_visitors
         FROM visit_fitness_room
         WHERE EXTRACT(YEAR FROM time_start) = %s
-        GROUP BY TO_CHAR(time_start, 'Month'), EXTRACT(MONTH FROM time_start)
-        ORDER BY EXTRACT(MONTH FROM time_start)
+        GROUP BY EXTRACT(MONTH FROM time_start)
+        ORDER BY month
     """
     results = execute_query(query, (year,))
+
+    months_order = [
+        'Янв', 'Фев', 'Март', 'Апр', 'Май', 'Июнь',
+        'Июль', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'
+    ]
+    month_counts = {i + 1: 0 for i in range(12)}
+
     if results:
-        # Создаём словарь для подсчёта количества посещений
-        month_counts = {}
         for row in results:
-            month = row[0].strip()
-            count = row[1]
-            month_counts[month] = count
+            month = int(row[0])
+            avg_count = row[1]
+            month_counts[month] = round(avg_count, 2)
 
-        # Вычисляем среднее посещений по месяцам (в данном случае среднее = общее, так как данные за один год)
-        average_visitors = {month: count for month, count in month_counts.items()}
-
-        # Упорядочиваем по стандартному порядку месяцев
-        months_order = [
-            'January', 'February', 'March', 'April', 'May', 'June',
-            'July', 'August', 'September', 'October', 'November', 'December'
-        ]
-        ordered_average_visitors = OrderedDict()
-        for month in months_order:
-            ordered_average_visitors[month] = average_visitors.get(month, 0)
-        return ordered_average_visitors
-    else:
-        logger.error("Нет данных для средних посетителей по месяцам")
-        return {}
+    return OrderedDict((months_order[i - 1], month_counts[i]) for i in range(1, 13))
 
 
 def add_client(surname, first_name, patronymic, phone_number, subscription_id):
@@ -889,120 +1037,10 @@ def end_attendance(visit_id):
         logger.info(f"Посещение ID {visit_id} успешно завершено")
 
 
-def get_max_visitors_per_hour(start_date, end_date):
-    """
-    Возвращает количество посетителей по часам за указанный период.
-    """
-    query = """
-        SELECT
-            EXTRACT(HOUR FROM time_start) AS hour,
-            COUNT(*) AS visitor_count
-        FROM visit_fitness_room
-        WHERE time_start BETWEEN %s AND %s
-        GROUP BY EXTRACT(HOUR FROM time_start)
-        ORDER BY hour
-    """
-    results = execute_query(query, (start_date, end_date))
-    if results:
-        # Создаём упорядоченный словарь для часов
-        visitors_per_hour = OrderedDict()
-        for row in results:
-            hour = int(row[0])
-            count = row[1]
-            # Форматируем часы в виде "08-10", "10-12" и т.д.
-            next_hour = hour + 2
-            if next_hour > 23:
-                next_hour = 23
-            visitors_per_hour[f"{hour:02d}-{next_hour:02d}"] = count
-        return visitors_per_hour
-    else:
-        logger.error("Нет данных для посетителей по часам")
-        return {}
 
 
-def get_average_visitors_per_weekday(start_date, end_date):
-    """
-    Возвращает среднее количество посетителей по дням недели за указанный период.
-    """
-    query = """
-        SELECT
-            TRIM(TO_CHAR(time_start, 'Day')) AS weekday,
-            COUNT(*) AS visitor_count
-        FROM visit_fitness_room
-        WHERE time_start BETWEEN %s AND %s
-        GROUP BY TRIM(TO_CHAR(time_start, 'Day'))
-        ORDER BY 
-            CASE TRIM(TO_CHAR(time_start, 'Day'))
-                WHEN 'Monday' THEN 1
-                WHEN 'Tuesday' THEN 2
-                WHEN 'Wednesday' THEN 3
-                WHEN 'Thursday' THEN 4
-                WHEN 'Friday' THEN 5
-                WHEN 'Saturday' THEN 6
-                WHEN 'Sunday' THEN 7
-            END
-    """
-    results = execute_query(query, (start_date, end_date))
-    if results:
-        # Создаём словарь для подсчёта количества дней
-        day_counts = {}
-        for row in results:
-            weekday = row[0].strip()
-            count = row[1]
-            day_counts[weekday] = count
-
-        # Вычисляем количество недель в периоде
-        total_days = (end_date - start_date).days + 1
-        total_weeks = total_days / 7
-
-        average_visitors = {day: count / total_weeks for day, count in day_counts.items()}
-
-        # Упорядочиваем по стандартному порядку недели
-        weekdays_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        ordered_average_visitors = OrderedDict()
-        for day in weekdays_order:
-            ordered_average_visitors[day] = round(average_visitors.get(day, 0), 2)
-        return ordered_average_visitors
-    else:
-        logger.error("Нет данных для средних посетителей по дням недели")
-        return {}
 
 
-def get_visitors_per_week_in_month(month, year):
-    """
-    Возвращает количество посетителей по неделям внутри указанного месяца и года.
-    Неделя 1: дни 1-7
-    Неделя 2: дни 8-14
-    Неделя 3: дни 15-21
-    Неделя 4: дни 22-28
-    Неделя 5: дни 29-end
-    """
-    start_date = datetime.date(year, month, 1)
-    if month == 12:
-        end_date = datetime.date(year + 1, 1, 1) - datetime.timedelta(days=1)
-    else:
-        end_date = datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
-
-    query = """
-        SELECT
-            FLOOR((EXTRACT(day FROM time_start) - 1) / 7) + 1 AS week_number,
-            COUNT(*) AS visitor_count
-        FROM visit_fitness_room
-        WHERE time_start BETWEEN %s AND %s
-        GROUP BY week_number
-        ORDER BY week_number
-    """
-    results = execute_query(query, (start_date, end_date))
-    if results:
-        week_visitors = OrderedDict()
-        for row in results:
-            week = int(row[0])
-            count = row[1]
-            week_visitors[f"Week {week}"] = count
-        return week_visitors
-    else:
-        logger.error("Нет данных для посетителей по неделям месяца")
-        return {}
 
 
 # 2. Подсчет количества активных клиентов

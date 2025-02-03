@@ -1,18 +1,22 @@
 import os
 from xml.dom.minidom import parseString
 
+from PyQt5 import QtCore
 from PyQt5.QtSvg import QSvgRenderer, QGraphicsSvgItem
 from PyQt5.QtWidgets import QPushButton, QGraphicsDropShadowEffect, QLabel, QVBoxLayout, QWidget, QGridLayout, \
-    QGraphicsSceneMouseEvent, QGraphicsScene, QGraphicsView
+    QGraphicsSceneMouseEvent, QGraphicsScene, QGraphicsView, QHBoxLayout, QStackedLayout, QMessageBox, QToolTip, \
+    QApplication
 from PyQt5.QtGui import QColor, QPixmap, QIcon, QPen, QPainter, QBrush, QMouseEvent, QImage
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QRectF, QByteArray, QTimer
+
+from database import execute_query
 
 
 class HoverButton(QPushButton):
     def __init__(self, text='', width: float = 347, height: float = 72, font_size: float = 22,
                  font_color: str = 'black', non_padding: bool = False, default_border: str = '',
                  hover_border: str = '', border_radius: float = 18, hover_text_color: str = '',
-                 margin: float = 0,weight: float =400, parent=None):
+                 margin: float = 0, weight: float = 400, parent=None):
         super().__init__(text, parent)
         self.setMouseTracking(True)
         self.width_value = width
@@ -42,6 +46,7 @@ class HoverButton(QPushButton):
         """Перехватывает событие клика и предотвращает его распространение."""
         super().mousePressEvent(event)
         event.accept()
+
     def mouseMoveEvent(self, event):
         """Перехватывает событие перемещения мыши и предотвращает его распространение."""
         super().mouseMoveEvent(event)
@@ -82,9 +87,6 @@ class HoverButton(QPushButton):
                 font-weight: {self.weight};
             }}
             """)
-
-
-
 
     def apply_default_shadow(self):
         if not self.is_disabled:
@@ -184,7 +186,8 @@ class HoverButton(QPushButton):
 
 
 class SvgHoverButton(QPushButton):
-    def __init__(self, svg_path, width=30, height=30, hover_color="#5DEBE6", default_color="#75A9A7", attrib='fill', need_shadow=True,parent=None):
+    def __init__(self, svg_path, width=30, height=30, hover_color="#5DEBE6", default_color="#75A9A7", attrib='fill',
+                 need_shadow=True, parent=None):
 
         super().__init__(parent)
         self.need_shadow = need_shadow
@@ -317,7 +320,6 @@ class SvgHoverButton(QPushButton):
         if timeout is not None:
             QTimer.singleShot(timeout, self.enable_button)
 
-
     def enable_button(self):
         """Включает кнопку, делает её активной."""
         self.is_disabled = False
@@ -337,23 +339,68 @@ class SvgHoverButton(QPushButton):
             self.update()
 
 
+class CustomAddTrainerOrAdminButton(QWidget):
+    def __init__(self, button,parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(300)
+        self.button = button
+        self.init_ui()
 
+    def init_ui(self):
+        layout = QGridLayout(self)
+        layout.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+        layout.addWidget(self.button)
+        self.setLayout(layout)
+
+    def update_styles(self):
+        pass
 
 
 class TrainerButton(QWidget):
-    clicked = pyqtSignal()  # Пользовательский сигнал для клика
+    clicked = pyqtSignal()  # Клик по тренеру
+    edit_clicked = pyqtSignal(dict)  # Теперь передаём весь словарь с данными тренера
 
-    def __init__(self, name, image_path, avatar_width=100, avatar_height=100, font_size=14,
+    delete_clicked = pyqtSignal(int)  # Удаление
+
+    def __init__(self, name,surname,patronymic, phone, description, image_path, trainer_id, admin_role=None,
+                 avatar_width=100, avatar_height=100, font_size=14,
                  border_width_normal=2, border_color_normal="#75A9A7",
                  border_width_hover=3, border_color_hover="#5DEBE6",
-                 border_width_selected=4, border_color_selected="#5DEBE6", parent=None):
+                 border_width_selected=4, border_color_selected="#5DEBE6", admin=False, password_hash=None,username=None,user_id=None, parent=None):
         super().__init__(parent)
         self.name = name
+        self.trainer_id = trainer_id
+        self.user_id = user_id
+        self.admin_role = admin_role  # Проверка роли
+        self.surname = surname
+        self.patronymic = patronymic
+
         self.image_path = image_path
         self.avatar_width = avatar_width
         self.avatar_height = avatar_height
         self.font_size_value = font_size
         self.is_selected = False
+        self.phone=phone
+        self.description = description
+
+        if admin:
+            self.password_hash=password_hash
+            self.username=username
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet("""
+                        QToolTip {
+                            background-color: white;
+                            color: black;
+                            border: 2px solid #75A9A7;
+                            border-radius: 10px;
+                            text-align:center;
+                            font-family:Unbounded;
+                            
+                            padding: 8px;
+                            font-size: 14px;
+                        }
+                    """)
 
         # Параметры рамки
         self.border_width_normal = border_width_normal
@@ -365,29 +412,88 @@ class TrainerButton(QWidget):
 
         self.initUI()
 
-    def initUI(self):
-        layout = QGridLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
+    def disable_button(self):
+        """Отключает кнопку, делает её серой и убирает интерактивность."""
+        self.is_disabled = True
+        self.setEnabled(False)
+        self.apply_styles()
 
-        # Аватарка
+    def update_avatar(self, image_data):
+        """Обновляет аватарку на основе новых данных."""
+        if isinstance(image_data, bytes):
+            pixmap = QPixmap()
+            pixmap.loadFromData(QByteArray(image_data))
+        elif isinstance(image_data, str) and os.path.exists(image_data):
+            pixmap = QPixmap(image_data)
+        else:
+            pixmap = QPixmap("group.png")  # Заглушка
+
+        pixmap = pixmap.scaled(self.avatar_width, self.avatar_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.avatar_label.setPixmap(pixmap)
+        self.image_path = image_data  # Обновляем путь к изображению
+    def initUI(self):
+        # --- Основной вертикальный layout ---
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(3)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setAlignment(Qt.AlignCenter)
+
+        # --- Сетка для кнопок и аватарки ---
+        grid_layout = QGridLayout()
+        grid_layout.setSpacing(0)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+
+        # --- Добавляем кнопки (✎ и ✖), если роль "Управляющий" ---
+        if self.admin_role == "Управляющий":
+            self.edit_button = HoverButton("✎", 25, 25, 29, '#F5D76E', True, '#F5D76E', '#fde910', 5, '#fde910')
+            self.delete_button = HoverButton("X", 25, 25, 29, '#8F2D31', True, '#8F2D31', 'red', 5, 'red')
+
+            self.edit_button.clicked.connect(lambda: self.edit_clicked.emit(self.get_trainer_data()))
+
+            self.delete_button.clicked.connect(self.confirm_delete)
+
+            # Карандаш (✎) в левом верхнем углу
+            grid_layout.addWidget(self.edit_button, 0, 0, alignment=Qt.AlignRight | Qt.AlignBottom)
+
+
+
+            # Крестик (✖) в правом верхнем углу
+            grid_layout.addWidget(self.delete_button, 0, 2, alignment=Qt.AlignLeft | Qt.AlignBottom)
+
+        # --- Аватарка тренера ---
         self.avatar_label = QLabel(self)
         self.avatar_label.setPixmap(
             QPixmap(self.image_path).scaled(self.avatar_width, self.avatar_height, Qt.KeepAspectRatio,
                                             Qt.SmoothTransformation)
         )
         self.avatar_label.setAlignment(Qt.AlignCenter)
+        self.avatar_label.setFixedSize(self.avatar_width, self.avatar_height)
         self.avatar_label.setStyleSheet(f"""
             QLabel {{
                 border: {self.border_width_normal}px solid {self.border_color_normal};
                 border-radius: 10px;
-                background-color: gray;
+                background-color: white;
+                
+                
             }}
         """)
         self.apply_default_shadow(self.avatar_label)
 
-        # Имя тренера
+        # Вторая строка — пустые ячейки слева и справа, аватарка по центру
+
+        grid_layout.addWidget(self.avatar_label, 1, 1, alignment=Qt.AlignCenter)
+
+
+        # Добавляем сетку в основной layout
+        main_layout.addLayout(grid_layout)
+
+        # --- Имя тренера (вынесено в отдельный QHBoxLayout) ---
+        name_layout = QHBoxLayout()
+        name_layout.setAlignment(Qt.AlignCenter)
+
         self.name_label = QLabel(self.name, self)
         self.name_label.setAlignment(Qt.AlignCenter)
+        name_layout.setContentsMargins(0,5,0,0)
         self.name_label.setWordWrap(True)
         self.name_label.setStyleSheet(f"""
             QLabel {{
@@ -398,24 +504,44 @@ class TrainerButton(QWidget):
             }}
         """)
 
-        layout.addWidget(self.avatar_label, 0, 0, alignment=Qt.AlignCenter)  # Аватарка
-        layout.addWidget(self.name_label, 1, 0, alignment=Qt.AlignCenter)  # Имя
+        name_layout.addWidget(self.name_label)
+        main_layout.addLayout(name_layout)
 
-        self.setLayout(layout)
+        self.setLayout(main_layout)
 
         # Подключение событий
         self.avatar_label.installEventFilter(self)
         self.name_label.installEventFilter(self)
 
+    def get_trainer_data(self):
+        """Возвращает данные тренера в виде словаря."""
+        data = {
+            "id": self.trainer_id,
+            "name": self.name,
+            "surname": self.surname,
+            "patronymic": self.patronymic,
+            "phone": self.phone,
+            "description": self.description,
+            "image": self.image_path,
+        }
+        if hasattr(self, "username"):
+            data.update({
+                "username": self.username,
+                "user_id": self.user_id,
+                "password_hash": self.password_hash,
+            })
+        return data
+
     def apply_styles(self, hovered=False):
         """Обновляет стили в зависимости от состояния выбора или наведения."""
+
         if hasattr(self, 'name_label') and self.name_label:
             if self.is_selected:
                 self.avatar_label.setStyleSheet(f"""
                     QLabel {{
                         border: {self.border_width_selected}px solid {self.border_color_selected};
                         border-radius: 10px;
-                        background-color: gray;
+                        background-color: white;
                     }}
                 """)
                 self.name_label.setStyleSheet(f"""
@@ -432,7 +558,7 @@ class TrainerButton(QWidget):
                     QLabel {{
                         border: {self.border_width_hover}px solid {self.border_color_hover};
                         border-radius: 10px;
-                        background-color: gray;
+                        background-color: white;
                     }}
                 """)
                 self.apply_hover_shadow(self.avatar_label)
@@ -441,7 +567,7 @@ class TrainerButton(QWidget):
                     QLabel {{
                         border: {self.border_width_normal}px solid {self.border_color_normal};
                         border-radius: 10px;
-                        background-color: gray;
+                        background-color: white;
                     }}
                 """)
                 self.name_label.setStyleSheet(f"""
@@ -461,7 +587,7 @@ class TrainerButton(QWidget):
                 QLabel {{
                     border: {self.border_width_selected}px solid {self.border_color_selected};
                     border-radius: 10px;
-                    background-color: gray;
+                    background-color: white;
                 }}
             """)
             self.name_label.setStyleSheet(f"""
@@ -478,13 +604,18 @@ class TrainerButton(QWidget):
                 QLabel {{
                     border: {self.border_width_hover}px solid {self.border_color_hover};
                     border-radius: 10px;
-                    background-color: gray;
+                    background-color: white;
                 }}
             """)
             self.apply_hover_shadow(self.avatar_label)
         else:
             self.apply_styles()
             self.apply_default_shadow(self.avatar_label)
+
+        # Обновляем аватарку, если данные изменились
+        if hasattr(self, "new_image_data"):
+            self.update_avatar(self.new_image_data)
+            delattr(self, "new_image_data")  # Удаляем временные данные
 
     def apply_default_shadow(self, widget):
         """Добавляет стандартную тень."""
@@ -513,11 +644,39 @@ class TrainerButton(QWidget):
         shadow.setColor(QColor(0, 0, 0, 100))
         widget.setGraphicsEffect(shadow)
 
+    def confirm_delete(self):
+        """Вызывает диалог подтверждения удаления"""
+        self.delete_clicked.emit(self.trainer_id)
+
+    def show_tooltip(self):
+        """Показываем QToolTip с информацией о тренере."""
+        from PyQt5.QtCore import QPoint
+
+        QToolTip.showText(
+            self.mapToGlobal(self.rect().bottomLeft() + QPoint(72, -20)),
+            f"""
+            <div style="text-align: center;">
+                <span style="font-weight: bold; font-size: 14px; color: black;">{self.name}</span><br>
+                <span style="font-weight: bold; font-size: 14px; color: black;">{self.surname}</span><br>
+                {f'<span style="font-weight: bold; font-size: 14px; color: black;">{self.patronymic}</span><br>' if self.patronymic else ''}
+                <span style="font-size: 14px; color: gray;">{self.phone}</span><br>
+                <span style="font-size: 14px; color: black;">{self.description}</span>
+            </div>
+            """
+        )
+
+    def hide_tooltip(self):
+        """Скрываем всплывающую информацию"""
+        self.tooltip_label.hide()
+
+
+
     def eventFilter(self, source, event):
         """Фильтруем события для аватарки и имени."""
-        if source == self.avatar_label or source == self.name_label:
+        if source == self.avatar_label:
             if event.type() == event.Enter:
                 self.update_styles(hovered=True)
+                self.show_tooltip()
                 return True
             elif event.type() == event.Leave:
                 self.update_styles()
@@ -528,3 +687,4 @@ class TrainerButton(QWidget):
                 self.clicked.emit()
                 return True
         return super().eventFilter(source, event)
+

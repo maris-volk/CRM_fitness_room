@@ -1,7 +1,7 @@
 import re
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QScrollArea, QLabel, QHBoxLayout, QGridLayout,
-                             QMessageBox, QSizePolicy, QSpacerItem, QAction)
+                             QMessageBox, QSizePolicy, QSpacerItem, QAction, QApplication)
 from PyQt5.QtCore import Qt, QRectF, QPoint, QTimer, QEvent
 from PyQt5.QtGui import QFont, QColor, QPen, QPainter
 
@@ -10,11 +10,10 @@ from database import execute_query, add_subscription_to_existing_user
 from freeze_and_block import RevokeSubscriptionWindow, FreezeSubscriptionWindow
 from hover_button import HoverButton
 from subscription import SubscriptionWidget
-from utils import WorkerThread, ClickableLabel, RoundedMenu
+from utils import WorkerThread, ClickableLabel, RoundedMenu, center
 
 from PyQt5.QtWidgets import QWidget, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
-
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QScrollArea, QLabel, QHBoxLayout, QGridLayout,
                              QMessageBox)
@@ -29,11 +28,13 @@ from utils import WorkerThread, ClickableLabel
 from PyQt5.QtWidgets import QWidget, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
 
+
 class ClientWidget(QWidget):
-    def __init__(self, client_data,parent_window):
+    def __init__(self, client_data, parent_window, role):
         super().__init__()
         self.parent_window = parent_window
         self.name_label = None
+        self.role = role
         self.setObjectName('base_widget')  # Установить имя объекта
         self.init_ui(client_data)
 
@@ -52,9 +53,9 @@ class ClientWidget(QWidget):
 
         # Первая строка: статус и телефон
         status_color = active_color if "В зале" in client_data['status'] else inactive_color
-        status_label = QLabel(client_data['status'])
-        status_label.setStyleSheet(f"color: {status_color}; font-weight: bold;")
-        status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.status_label = QLabel(client_data['status'])
+        self.status_label.setStyleSheet(f"color: {status_color}; font-weight: bold;")
+        self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         phone_text = client_data['phone']
         if len(phone_text) > 14:
@@ -63,11 +64,6 @@ class ClientWidget(QWidget):
         phone_label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)  # Минимальная ширина, зависящая от текста
 
         phone_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
-
-
-        # Объединяем статус и телефон в горизонтальный макет
-
 
         # Абонемент
         subscription_text = client_data.get('subscription', 'Абонемент отсутствует')
@@ -78,15 +74,11 @@ class ClientWidget(QWidget):
         self.subscription_label.setStyleSheet(f"color: {subscription_color};")
         self.subscription_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-
-
         # Вторая строка: имя
         name_text = client_data['name']
         max_length = 16  # Базовое ограничение
         if not client_data['name'].isupper():
             max_length += 2  # Увеличиваем ограничение, если имя не написано капсом
-
-
 
         if len(name_text) > max_length:
             name_text = name_text[:max_length] + "..."
@@ -109,13 +101,19 @@ class ClientWidget(QWidget):
         status_and_phone_layout.setAlignment(Qt.AlignLeft)
 
         # Добавляем статус и телефон
-        status_and_phone_layout.addWidget(status_label)
+        status_and_phone_layout.addWidget(self.status_label)
         status_and_phone_layout.addWidget(phone_label)
 
         # Добавляем макет в сетку
         grid.addWidget(status_and_phone_widget, 0, 0)
         grid.addWidget(self.name_label, 1, 0)
         grid.addWidget(self.subscription_label, 0, 1)
+
+        if self.role == 'Управляющий':
+            delete_button = HoverButton("✖", 30, 30, 30, 'red', True, 'red', 'white', 5, 'red')
+            delete_button.clicked.connect(self.delete_client)
+            grid.addWidget(delete_button, 0, 2, 3, 1,
+                           alignment=Qt.AlignLeft)  # rowSpan = 3, чтобы кнопка занимала всю высоту
 
         # Тренер
         trainer_color = active_color if "Тренер" in client_data['trainer'] else inactive_color
@@ -157,21 +155,35 @@ class ClientWidget(QWidget):
         self.name_label.setStyleSheet("color: black; font-weight: bold;font-size: 18px;margin-left:8px;")
         self.name_label.clicked.connect(
             lambda client_id=self.client_id: self.show_client_profile(self.client_id))
-        self.subscription_label.mousePressEvent = lambda event: self.handle_subscription_click(self.client_id, client_data, event)
+        self.subscription_label.mousePressEvent = lambda event: self.handle_subscription_click(self.client_id,
+                                                                                               client_data, event)
 
+    def delete_client(self):
+        # Удаляем клиента из базы данных
+        query = "DELETE FROM client WHERE client_id = %s"
+        execute_query(query, (self.client_id,))
+
+        # Удаляем виджет клиента из списка
+        self.parent_window.remove_client_widget(self.client_id)
 
     def show_client_profile(self, client_id):
         print(f"Открытие профиля клиента с ID: {client_id}")
-        self.profile_window = ClientProfileWindow(client_id)
+        self.profile_window = ClientProfileWindow(client_id, self.role)
+        self.profile_window.status_updated.connect(self.update_status)
         self.profile_window.show()
         self.profile_window.raise_()
         print("Профиль клиента открыт.")
 
-    def open_subscription_widget(self, user_id):
-        # Открываем окно для добавления абонемента
-        self.subscription_window = SubscriptionWidget()
+    def update_status(self, new_status):
+        """
+        статус клиента в основном виджете после завершения посещения.
+        """
+        self.status_label.setText(new_status)
+        status_color = "#75A9A7" if "Вне зала" in new_status else "#05A9A3"
+        self.status_label.setStyleSheet(f"color: {status_color}; font-weight: bold; font-family: 'Unbounded';")
 
-        # Подключаем сигнал confirmed к методу для добавления абонемента
+    def open_subscription_widget(self, user_id):
+        self.subscription_window = SubscriptionWidget()
         self.subscription_window.confirmed.connect(
             lambda subscription_data: self.add_subscription(user_id, subscription_data)
         )
@@ -195,7 +207,6 @@ class ClientWidget(QWidget):
 
             else:
                 QMessageBox.critical(self, "Ошибка", "Не удалось загрузить данные об абонементе.")
-
 
     def fetch_subscription_data(self, subscription_id):
         """
@@ -291,7 +302,6 @@ class ClientWidget(QWidget):
         # Запускаем таймер на автоматическое закрытие, если курсор не наведён
         self.hovered = False
         self.context_menu.installEventFilter(self)  # Устанавливаем фильтр событий для отслеживания наведения
-        QTimer.singleShot(2000, self.close_if_not_hovered)
 
         # Отображаем меню
         self.context_menu.exec_(pos)
@@ -341,10 +351,17 @@ class ClientWidget(QWidget):
 
 
 class ClientSearchWindow(QWidget):
-    def __init__(self):
+    def __init__(self, role=None):
         super().__init__()
+
         self.setWindowTitle("Список посетителей")
-        self.setGeometry(300, 300, 670, 650)
+        if role == "Управляющий":
+            self.setGeometry(300, 300, 700, 650)
+
+        else:
+            self.setGeometry(300, 300, 670, 650)
+        self.role = role
+
         self.setWindowFlags(Qt.FramelessWindowHint)  # Remove window controls
         self.setAttribute(Qt.WA_TranslucentBackground)  # Transparent background
         self.oldPos = self.pos()
@@ -353,7 +370,20 @@ class ClientSearchWindow(QWidget):
         self.setWindowModality(Qt.ApplicationModal)  # Modal window blocking other windows
         self.client_list = []  # Список клиентов
         self.init_ui()
+        center(self)
         self.load_clients()
+
+    def remove_client_widget(self, client_id):
+        """
+        Удаляет виджет клиента по его ID.
+        """
+        for i in range(self.container_layout.count()):
+            widget = self.container_layout.itemAt(i).widget()
+            if widget:
+                client_widget = widget.findChild(ClientWidget)
+                if client_widget and client_widget.client_id == client_id:
+                    widget.deleteLater()  # Удаляет виджет из контейнера
+                    break
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -450,7 +480,7 @@ class ClientSearchWindow(QWidget):
                 widget.setParent(None)
 
         for client in clients:
-            client_widget = ClientWidget(client, self)
+            client_widget = ClientWidget(client, self, self.role)
 
             # Создаем QWidget-обертку
             frame = QWidget()
@@ -463,7 +493,6 @@ class ClientSearchWindow(QWidget):
                 }
         """)
             frame_layout = QVBoxLayout(frame)
-
 
             frame_layout.addWidget(client_widget)
             frame_layout.setContentsMargins(0, 0, 0, 0)  # Важно! Убираем отступы
@@ -608,11 +637,9 @@ class ClientSearchWindow(QWidget):
 
         painter.end()
 
-
-
     def show_client_profile(self, client_id):
         print(f"Открытие профиля клиента с ID: {client_id}")
-        self.profile_window = ClientProfileWindow(client_id)
+        self.profile_window = ClientProfileWindow(client_id, self.role)
         self.profile_window.show()
         self.profile_window.raise_()
         print("Профиль клиента открыт.")

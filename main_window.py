@@ -2,26 +2,29 @@ import calendar
 import datetime
 import locale
 import logging
+import os
 import threading
 from functools import partial
 
 from PyQt5 import QtWidgets, QtGui, QtCore, sip
 from PyQt5.QtChart import QChartView, QBarSeries, QBarSet, QChart, QBarCategoryAxis, QValueAxis
-from PyQt5.QtCore import QTimer, Qt, QMargins, pyqtSignal, QThread, QSize, QTime
-from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QPixmap
+from PyQt5.QtCore import QTimer, Qt, QMargins, pyqtSignal, QThread, QSize, QTime, QByteArray
+from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QPixmap, QPixmapCache
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, QStackedWidget, QGridLayout, \
-    QSizePolicy, QScrollArea, QMessageBox, QApplication
+    QSizePolicy, QScrollArea, QMessageBox, QApplication, QScrollBar, QSpacerItem
+from babel.dates import format_date
 
 from add_trainer_slot import AddSlotWindow
-from add_visitor_window import AddVisitorWindow
+from add_visitor_window import AddVisitorWindow, AddTrainerWindow, AddAdministratorWindow
 from chart import ChartWidget
 from constants import MAX_ACTIVE_THREADS
 from database import get_active_visitors, get_duty_trainers, count_visitors_in_gym, check_visitor_in_gym, \
     end_attendance, \
-    start_attendance, execute_query, count_all_trainers, get_all_trainers, get_schedule_for_week
-from hover_button import HoverButton, TrainerButton, SvgHoverButton
+    start_attendance, execute_query, count_all_trainers, get_all_trainers, get_schedule_for_week, get_all_admins
+from hover_button import HoverButton, TrainerButton, SvgHoverButton, CustomAddTrainerOrAdminButton
 from search_client import ClientSearchWindow
-from utils import scan_card, WorkerThread, ResizablePhoto, FillPhoto
+from utils import scan_card, WorkerThread, ResizablePhoto, FillPhoto, ClickableLabelForSlots, resources_path, \
+    correct_to_nominative_case, LoadAdminsThread, ScanCardDialog
 from subscription import SubscriptionWidget, SelectionGroupWidget
 
 logger = logging.getLogger(__name__)
@@ -171,23 +174,41 @@ class MainWindow(QWidget):
 
     def show_view_visitors_window(self):
         if not hasattr(self, 'view_visitors_window') or not self.view_visitors_window.isVisible():
-            self.view_visitors_window = ClientSearchWindow()
+            self.view_visitors_window = ClientSearchWindow(self.admin_role)
+
             self.view_visitors_window.show()
             self.view_visitors_window.raise_()
 
     def scan_card_for_attendance(self):
+        if hasattr(self, 'scan_thread') and self.scan_thread.isRunning():
+            self.scan_thread.stop()  # Останавливаем старый поток
+            self.scan_thread.wait()  # Ждем завершения
+
+        self.card_number = None  # Сбрасываем перед каждым сканированием
         self.scan_thread = WorkerThread(self._scan_card_and_update_attendance)
         self.scan_thread.result_signal.connect(self.handle_scan_result)
         self.scan_thread.start()
 
     def _scan_card_and_update_attendance(self):
         card_number = scan_card()
-        if card_number:
-            attendance_data = check_visitor_in_gym(card_number)
-            return (card_number, attendance_data)
-        return None
+
+        if self.scan_thread._stop_requested:  # Проверяем, был ли поток остановлен
+            return None
+
+        if not card_number:
+            return None
+
+        attendance_data = check_visitor_in_gym(card_number)
+
+        if self.scan_thread._stop_requested:  # Проверяем снова перед возвратом результата
+            return None
+
+        return card_number, attendance_data
 
     def handle_scan_result(self, result):
+        if not result:
+            QMessageBox.warning(self, "Ошибка", "Карта не была отсканирована.")
+            return
         if result is None:
             logger.error("Ошибка при сканировании карты или получении данных")
             QMessageBox.critical(self, "Ошибка", "Произошла ошибка при сканировании карты.")
@@ -215,14 +236,16 @@ class MainWindow(QWidget):
 
         self.main_page = QWidget()
         self.init_main_page()
+
         self.stack.addWidget(self.main_page)
 
         self.schedule_page = QWidget()
         self.init_schedule_page()
         self.stack.addWidget(self.schedule_page)
         if self.admin_role == 'Управляющий':
-            self.manage_page = QWidget()
-            self.stack.addWidget(self.manage_page)
+            self.administrator_page = QWidget()
+            self.init_administrators_page()
+            self.stack.addWidget(self.administrator_page)
 
         # Верхняя панель
         top_panel = QFrame()
@@ -240,22 +263,28 @@ class MainWindow(QWidget):
             weight:400;
             }
         """)
-        top_layout = QGridLayout(top_panel)
+        top_layout = QHBoxLayout(top_panel)
 
-        self.visitors_label = QLabel()
-        self.trainers_label = QLabel()
-        self.visitors_label.setText("0 посетителей\n0 в зале")
-        self.trainers_label.setText("0 тренеров\n0 на смене")
-
+        # Создание элементов
+        self.visitors_label = QLabel("0 посетителей\n0 в зале")
+        self.trainers_label = QLabel("0 тренеров\n0 на смене")
         schedule_label = QLabel("Расписание тренеров")
         schedule_label.setCursor(Qt.PointingHandCursor)
         schedule_label.mousePressEvent = lambda event: self.switch_to_page(self.schedule_page)
 
-        self.profile_button = SvgHoverButton("src/group.svg", width=51, height=51, default_color='#75A9A7',
-                                           hover_color="#88F9F5",attrib="stroke",need_shadow=False)
+        admin_label = None
+        if self.admin_role == "Управляющий":
+            admin_label = QLabel("Администраторы")
+            admin_label.setCursor(Qt.PointingHandCursor)
+            admin_label.mousePressEvent = lambda event: self.switch_to_page(self.administrator_page)
+
+        # Создание кнопки профиля
+        self.profile_button = SvgHoverButton(resources_path("src/group.svg"), width=51, height=51,
+                                             default_color='#75A9A7',
+                                             hover_color="#88F9F5", attrib="stroke", need_shadow=False)
         self.profile_button.setFixedSize(51, 51)
         self.profile_button.clicked.connect(lambda: self.switch_to_page(self.schedule_page))
-        self.profile_button.setIcon(QIcon("Group.png"))
+        self.profile_button.setIcon(QIcon(resources_path("Group.png")))
         self.profile_button.setIconSize(QSize(51, 51))
         self.profile_button.setStyleSheet("""
             QPushButton {
@@ -263,15 +292,24 @@ class MainWindow(QWidget):
                 background-color: transparent;
             }
             QPushButton:pressed {
-                background-color: lightgray; 
+                background-color: lightgray;
             }
         """)
 
-        top_layout.addWidget(self.visitors_label, 0, 0, Qt.AlignLeft)
-        top_layout.addWidget(self.trainers_label, 0, 1, Qt.AlignCenter)
-        top_layout.addWidget(schedule_label, 0, 2, Qt.AlignCenter)
-        top_layout.addWidget(self.profile_button, 0, 3, Qt.AlignRight)
-        top_layout.setContentsMargins(130, 0, 130, 20)
+        # Добавляем элементы в горизонтальный layout
+        top_layout.addWidget(self.visitors_label)
+        top_layout.addWidget(self.trainers_label)
+        if self.admin_role == "Управляющий":
+            top_layout.addWidget(admin_label)
+        top_layout.addWidget(schedule_label)
+
+        # Spacer для отступа перед кнопкой, создадим пространство между элементами и кнопкой
+        # spacer = QSpacerItem(90, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
+        # top_layout.addItem(spacer)
+        # self.profile_button.setAl
+        top_layout.addWidget(self.profile_button, Qt.AlignLeft)  # Кнопка будет выровнена вправо
+
+        top_layout.setContentsMargins(100, 0, 100, 20)
 
         label_style = """
                    font-family: 'Unbounded';
@@ -302,7 +340,8 @@ class MainWindow(QWidget):
         new_visitor_button = HoverButton("Новый посетитель")
         new_visitor_button.clicked.connect(self.show_add_visitor_window)
         scan_card_button = HoverButton("Сканировать карту")
-        scan_card_button.clicked.connect(self.scan_card_for_attendance)
+        scan_card_button.clicked.connect(lambda: ScanCardDialog(self).exec_())
+
         visitor_list_button = HoverButton("Список посетителей")
         visitor_list_button.clicked.connect(self.show_view_visitors_window)
         left_panel.addWidget(new_visitor_button)
@@ -319,26 +358,37 @@ class MainWindow(QWidget):
         # Центральная панель
         central_panel = QVBoxLayout()
         central_panel.setSpacing(20)
-        duty_trainers_label = QLabel("Тренеры на смене:")
+
+
+        # Надпись "Тренеры на смене"
+        self.for_need_widget = QWidget()
+        self.trainers_container = QVBoxLayout()
+        self.trainers_container.setSpacing(10)
+        self.trainers_container.setAlignment(Qt.AlignLeft)
+        self.duty_trainers_label = QLabel("Тренеры на смене:")
         font = QFont("Unbounded", 28, QFont.Bold)
-        duty_trainers_label.setFont(font)
-        duty_trainers_label.setStyleSheet("""
-            font-family: Unbounded;
-            font-size: 28px;
-            font-weight: 700;
-            line-height: 35px;
-            text-align: left;
-        """)
+        self.duty_trainers_label.setFont(font)
+        self.duty_trainers_label.setStyleSheet("""
+                    font-family: Unbounded;
+                    font-size: 28px;
+                    font-weight: 700;
+                    line-height: 35px;
+                    text-align: left;
+                """)
+        self.trainers_container.addWidget(self.duty_trainers_label)
+        self.trainers_grid_widget = QWidget()
+        self.trainers_grid = QHBoxLayout()
+        self.trainers_grid.setSpacing(10)
+        self.displayed_trainers = []
+        self.trainers_grid_widget.setLayout(self.trainers_grid)
+        self.trainers_container.addWidget(self.trainers_grid_widget)
+        self.main_trainer_widget = QWidget()
+        self.main_trainer_widget.setLayout(self.trainers_container)
 
-        center_frame = QFrame()
-        center_frame_layout = QHBoxLayout(center_frame)
-        center_frame_layout.setAlignment(Qt.AlignLeft)
-        self.trainer_widgets = []
+        central_panel.addWidget(self.main_trainer_widget)
 
-        central_panel.addWidget(duty_trainers_label, stretch=0)
-        central_panel.addWidget(center_frame, stretch=0)
-
-        central_panel.addWidget(self.chart_widget, stretch=3)  # Диаграмма получает больший коэффициент растяжки
+        # Добавляем диаграмму
+        central_panel.addWidget(self.chart_widget, stretch=2)  # Диаграмма получает больший коэффициент растяжки
         central_panel.addStretch(1)
 
         central_widget = QWidget()
@@ -350,8 +400,47 @@ class MainWindow(QWidget):
         right_panel.setSpacing(20)
         right_panel.setAlignment(Qt.AlignTop)
 
-        self.photo_placeholder = FillPhoto("")
-        self.photo_placeholder.setFixedSize(325, 433)
+        self.photo_label = QLabel()
+        self.photo_label.setFixedSize(320, 400)
+        self.photo_label.setStyleSheet("""
+                    background-color: #F0F0F0;
+                    border: 2px solid #75A9A7;
+                    border-radius: 10px;
+                """)
+
+        # Загружаем фото, если есть
+        if self.admin_photo_data:
+            photo_pixmap = self.load_image_from_bytes(self.admin_photo_data)
+            if photo_pixmap:
+                photo_pixmap = self.load_image_from_bytes(self.admin_photo_data)
+                if photo_pixmap:
+                    # Масштабируем изображение с заполнением всего QLabel (часть изображения обрежется)
+                    scaled_pixmap = photo_pixmap.scaled(
+                        self.photo_label.size(),
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+
+                    # Создаем пустой QPixmap с размерами QLabel
+                    final_pixmap = QPixmap(self.photo_label.size())
+                    final_pixmap.fill(Qt.GlobalColor.transparent)  # Прозрачный фон
+
+                    # Отрисовываем изображение по центру
+                    painter = QPainter(final_pixmap)
+                    x_offset = (self.photo_label.width() - scaled_pixmap.width()) // 2
+                    y_offset = (self.photo_label.height() - scaled_pixmap.height()) // 2
+                    painter.drawPixmap(x_offset, y_offset, scaled_pixmap)
+                    painter.end()
+
+                    # Устанавливаем готовое изображение в QLabel
+                    self.photo_label.setPixmap(final_pixmap)
+
+            else:
+                # Если фото не смогло загрузиться
+                self.photo_label.setVisible(False)
+        else:
+            # Если фотография отсутствует в БД
+            self.photo_label.setVisible(False)
 
         self.name_label = QLabel("")
         self.role_label = QLabel("")
@@ -366,12 +455,7 @@ class MainWindow(QWidget):
 
         self.name_label.setText(self.admin_full_name)
         self.role_label.setText(self.admin_role)
-        if self.admin_photo_data:
-            self.photo_placeholder.setPhotoData(self.admin_photo_data)
-        else:
-            self.photo_placeholder.setText("Фото не установлено")
-
-        right_panel.addWidget(self.photo_placeholder, alignment=Qt.AlignLeft)
+        right_panel.addWidget(self.photo_label, alignment=Qt.AlignLeft)
         right_panel.addWidget(self.name_label, alignment=Qt.AlignLeft)
         right_panel.addWidget(self.role_label, alignment=Qt.AlignLeft)
         right_panel.addStretch()
@@ -386,27 +470,65 @@ class MainWindow(QWidget):
 
         layout.addLayout(grid_layout)
 
+    def load_image_from_bytes(self, image_data):
+        """
+        Загружает изображение из байтов и кэширует его.
+        :param image_data: Байтовое представление изображения.
+        :return: QPixmap или None, если загрузка не удалась.
+        """
+        if not image_data:
+            return None
+
+        # Используем хэш-сумму данных изображения в виде строки
+        cache_key = str(hash(image_data))  # Преобразуем хэш в строку
+
+        # Проверяем, есть ли изображение в кэше
+        pixmap = QPixmapCache.find(cache_key)
+        if pixmap:
+            return pixmap
+
+        # Если изображения нет в кэше, загружаем его из данных
+        pixmap = QPixmap()
+        if pixmap.loadFromData(image_data):
+            QPixmapCache.insert(cache_key, pixmap)  # Сохраняем в кэш
+            return pixmap
+
+        return None
+
+    def get_image_data(self):
+        # Пример: загрузка данных изображения из файла
+        with open("path_to_image.png", "rb") as file:
+            return file.read()
+
     def load_duty_trainers(self):
         self.duty_trainers_thread = WorkerThread(get_duty_trainers)
         self.duty_trainers_thread.result_signal.connect(self.update_duty_trainers_ui)
         self.duty_trainers_thread.start()
 
     def update_duty_trainers_ui(self, duty_trainers):
-        if duty_trainers:
-            center_frame = self.main_page.findChild(QFrame)
-            if center_frame:
-                center_layout = center_frame.layout()
-                for widget in self.trainer_widgets:
-                    center_layout.removeWidget(widget)
-                    widget.setParent(None)
-                self.trainer_widgets.clear()
+        # Очищаем текущие виджеты
+        # self.trainers_container.addWidget(self.duty_trainers_label)
+        # self.trainers_grid = QHBoxLayout()
+        # self.trainers_grid.setSpacing(10)
+        # self.displayed_trainers = []
+        # self.trainers_container.addWidget(self.trainers_grid)
+        # central_panel.addWidget(self.trainers_container)
+        for widget in self.displayed_trainers:
+            self.trainers_grid.removeWidget(widget)
+            widget.setParent(None)
 
-                for trainer in duty_trainers[:3]:
-                    trainer_widget = self.create_trainer_widget(trainer)
-                    center_layout.addWidget(trainer_widget)
-                    self.trainer_widgets.append(trainer_widget)
+
+        if duty_trainers:
+            # Добавляем новые виджеты
+            for trainer in duty_trainers[:3]:  # Ограничиваем количество тренеров до 3
+                trainer_widget = self.create_trainer_widget(trainer)
+                self.trainers_grid.addWidget(trainer_widget)
+                self.displayed_trainers.append(trainer_widget)
+
+            self.duty_trainers_label.setText("Тренера на смене:")
         else:
-            logger.error("Не удалось загрузить тренеров на смене.")
+            # Если тренеров нет, отображаем надпись
+            self.duty_trainers_label.setText("Нет тренеров на смене")
 
     def create_trainer_widget(self, trainer):
         trainer_id, first_name, surname, patronymic, phone_number, description, photo = trainer
@@ -415,39 +537,37 @@ class MainWindow(QWidget):
         layout.setAlignment(Qt.AlignCenter)
 
         photo_label = QLabel()
-        photo_label.setFixedSize(93, 93)
+        photo_label.setFixedSize(90, 90)
         photo_label.setStyleSheet("""
-            background-color: gray;
-            border-radius: 18px;
             border: 2.7px solid #75A9A7;
-            padding: 0px 2px 0px 3px;
-            margin-top: 0px;
+            border-radius:10px;
         """)
+
         if photo:
             pixmap = QPixmap()
             pixmap.loadFromData(photo)
-            pixmap = pixmap.scaled(93, 93, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pixmap = pixmap.scaled(90, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             photo_label.setPixmap(pixmap)
-        else:
-            photo_label.setText(f"{surname} {first_name}")
             photo_label.setAlignment(Qt.AlignCenter)
+        else:
+            photo_label.setText(first_name)
+            photo_label.setAlignment(Qt.AlignCenter)
+            photo_label.setStyleSheet("font-size: 14px; font-weight: bold;")
 
         layout.addWidget(photo_label)
-        name_label = QLabel(f"{surname} {first_name}")
-        name_label.setFont(QFont("Unbounded", 12, QFont.Bold))
-        name_label.setAlignment(Qt.AlignCenter)
+
+        name_label = QLabel(f"{first_name}")
+        name_label.setFont(QFont("Unbounded", 10, QFont.Bold))
+        name_label.setFixedWidth(100)
+        name_label.setAlignment(Qt.AlignLeft)
+        name_label.setWordWrap(True)
+        name_label.adjustSize()
+
         layout.addWidget(name_label)
 
         trainer_widget = QWidget()
         trainer_widget.setLayout(layout)
-        trainer_widget.setFixedSize(100, 130)
-        trainer_widget.setStyleSheet("""
-            QWidget {
-                border: 1px solid #75A9A7;
-                border-radius: 10px;
-                background-color: #f0f0f0;
-            }
-        """)
+        trainer_widget.setFixedSize(150, 180)  # Даем больше места
 
         return trainer_widget
 
@@ -461,16 +581,29 @@ class MainWindow(QWidget):
             print(3211)
 
             for trainer in trainers:
-                trainer_widget = self.create_trainer_widget_to_slot(
-                    trainer_id=trainer["id"],
+                trainer_widget = self.create_personal_widget_to_slot(
+                    id=trainer["id"],
                     name=trainer["name"],
-                    image_path=trainer["image"]
+                    surname=trainer["surname"],
+                    patronymic=trainer["patronymic"],
+                    phone=trainer["phone"],
+                    description=trainer["description"],
+                    image_data=trainer["image"]
                 )
+
                 trainer_widget.setFixedWidth(300)  # Ограничение ширины виджета
+                print(trainer_widget.width())
+                print(trainer_widget.height())
                 trainer_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
 
                 self.trainers_layout.addWidget(trainer_widget)
                 self.trainer_buttons.append(trainer_widget)
+
+            add_trainer_widget = CustomAddTrainerOrAdminButton(self.add_trainer_button)
+
+            self.trainers_layout.addWidget(add_trainer_widget)
+            self.trainer_buttons.append(add_trainer_widget)
+            self.update_scrollbar_visibility()
 
         self.worker = WorkerThread(get_all_trainers)
         print(1123)
@@ -478,22 +611,244 @@ class MainWindow(QWidget):
         self.worker.finished_signal.connect(self.worker.deleteLater)
         self.worker.start()
 
-    def display_trainers(self, trainers):
+    def init_administrators_page(self):
+        self.selected_admin_id = None
+        layout = QVBoxLayout(self.administrator_page)
+        layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        layout.setObjectName("admin_page")
+
+        self.admin_scroll_area = QScrollArea()
+        self.admin_scroll_area.setStyleSheet("border:0px")
+        self.admin_scroll_area.setWidgetResizable(True)
+        self.admin_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.admin_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.admin_scroll_area.setFixedHeight(200)
+
+        self.admin_container = QWidget()
+        self.admin_layout = QHBoxLayout(self.admin_container)
+        self.admin_layout.setSpacing(10)
+        self.admin_layout.setContentsMargins(0, 0, 0, 0)
+        self.admin_layout.setAlignment(Qt.AlignCenter)
+        self.admin_buttons = []
+
+        self.admin_scroll_area.setWidget(self.admin_container)
+
+        self.admin_horizontal_scrollbar = QScrollBar(Qt.Horizontal)
+        self.admin_horizontal_scrollbar.setFixedHeight(10)
+        self.admin_horizontal_scrollbar.setStyleSheet("""
+            QScrollBar:horizontal {
+                height: 8px;
+                background: white;
+            }
+            QScrollBar::handle:horizontal {
+                background: #5DEBE6;
+                border-radius: 4px;
+            }
+        """)
+
+        self.admin_horizontal_scrollbar.valueChanged.connect(self.admin_scroll_area.horizontalScrollBar().setValue)
+        self.admin_scroll_area.horizontalScrollBar().valueChanged.connect(self.admin_horizontal_scrollbar.setValue)
+        self.admin_horizontal_scrollbar.hide()
+
+        admin_section_layout = QVBoxLayout()
+        admin_section_layout.addWidget(self.admin_horizontal_scrollbar)
+        admin_section_layout.addWidget(self.admin_scroll_area)
+        admin_section_layout.setSpacing(0)
+        admin_section_layout.setContentsMargins(0, 0, 0, 0)
+
+        layout.addLayout(admin_section_layout)
+
+        # Кнопка добавления администратора
+        self.add_admin_button = HoverButton("+", 65, 65, 65, '#75A9A7', True, '', '', 10, '#5DEBE6')
+        self.add_admin_button.clicked.connect(self.open_add_admin_window)
+        self.admin_layout.addWidget(self.add_admin_button, Qt.AlignCenter)
+
+        # Загрузка администраторов
+        self.load_admins()
+
+    def open_add_admin_window(self):
+        self.add_admin_window = AddAdministratorWindow()
+        self.add_admin_window.admin_added.connect(self.add_admin_to_ui)
+        self.add_admin_window.show()
+        self.add_admin_window.raise_()
+
+    def add_admin_to_ui(self, admin_data):
+        admin_widget = self.create_personal_widget_to_slot(
+            id=admin_data["admin_id"],
+            name=admin_data["name"],
+            surname=admin_data["surname"],
+            patronymic=admin_data["patronymic"],
+            phone=admin_data["phone"],
+            description=admin_data["description"],
+            image_data=admin_data["image"],
+            username=admin_data["username"],
+            password_hash=admin_data["password_hash"],
+            user_id=admin_data["user_id"],
+            admin=True
+        )
+        admin_widget.setFixedWidth(300)
+        admin_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.admin_layout.insertWidget(len(self.admin_buttons) - 1, admin_widget)
+        self.admin_buttons.insert(len(self.admin_buttons) - 1, admin_widget)
+
+        self.update_scrollbar_visibility(admin=True)
+        admin_widget.clicked.emit()
+
+    def load_admins(self):
+        self.load_admins_thread = LoadAdminsThread()
+        self.load_admins_thread.result_signal.connect(self.handle_admins_loaded)
+        self.load_admins_thread.error_signal.connect(self.handle_admins_error)
+        self.load_admins_thread.start()
+
+    def handle_admins_loaded(self, admins):
+        for admin in admins:
+            admin_widget = self.create_personal_widget_to_slot(
+                id=admin["admin_id"],
+                name=admin["first_name"],
+                surname=admin["surname"],
+                patronymic=admin["patronymic"],
+                phone=admin["phone_number"],
+                description=admin["description"],
+                image_data=admin["photo"],
+                username=admin["username"],
+                password_hash=admin["password_hash"],
+                user_id=admin["user_id"],
+                admin=True
+            )
+            admin_widget.setFixedWidth(300)
+            admin_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            self.admin_layout.addWidget(admin_widget)
+            self.admin_buttons.append(admin_widget)
+
+        add_admin_widget = CustomAddTrainerOrAdminButton(self.add_admin_button)
+        self.admin_layout.addWidget(add_admin_widget)
+        self.admin_buttons.append(add_admin_widget)
+        self.update_scrollbar_visibility(admin=True)
+
+    def handle_admins_error(self, error_message):
+        QMessageBox.warning(self, "Ошибка", f"Не удалось загрузить администраторов: {error_message}")
+
+    def delete_admin(self, admin_id):
         """
-        Отображает тренеров на странице после их загрузки.
-        :param trainers: Список тренеров из базы данных.
+        Удаляет администратора и каскадно удаляет все его записи в базе.
         """
-        if not trainers:
-            print("Тренеры не найдены в базе данных.")
-            return
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Удаление")
+        message_box.setText("Вы подтверждаете удаление администратора?\nПользователь утратит доступ к системе.")
+        message_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        message_box.button(QMessageBox.Yes).setText("Да")
+        message_box.button(QMessageBox.No).setText("Нет")
 
-        self.trainer_buttons = []
-        for trainer in trainers:
-            trainer_widget = self.create_trainer_widget_to_slot(trainer["id"], trainer["name"], trainer["image"])
-            self.trainers_layout.addWidget(trainer_widget)
-            self.trainer_buttons.append(trainer_widget)
+        reply = message_box.exec_()
 
+        if reply == QMessageBox.Yes:
+            # Удаление администратора из базы данных
+            query = "DELETE FROM administrators WHERE admin_id = %s"
+            execute_query(query, (admin_id,), fetch=False)
 
+            # Удаление связанного пользователя из таблицы users
+            query = "DELETE FROM users WHERE user_id = (SELECT user_id FROM administrators WHERE admin_id = %s)"
+            execute_query(query, (admin_id,), fetch=False)
+
+            admin_to_remove = None
+
+            # Удаление виджета администратора из UI
+            for admin_widget in self.admin_buttons:
+                if admin_widget.trainer_id == admin_id:
+                    admin_to_remove = admin_widget
+                    break
+
+            if admin_to_remove:
+                self.admin_layout.removeWidget(admin_to_remove)
+                admin_to_remove.deleteLater()
+                self.admin_buttons.remove(admin_to_remove)
+
+            # Если удалённый администратор был выбран, сбрасываем выбор
+            if self.selected_admin_id == admin_id:
+                self.selected_admin_id = None
+
+            # Перепривязываем события, чтобы не осталось "битых" ссылок
+            valid_admins = [a for a in self.admin_buttons if hasattr(a, "admin_id")]
+
+            for admin_widget in valid_admins:
+                admin_widget.clicked.disconnect()
+                admin_widget.clicked.connect(
+                    lambda btn=admin_widget, aid=admin_widget.admin_id: self.select_admin(btn, aid)
+                )
+            self.update_scrollbar_visibility(admin=True)
+
+    def select_admin(self, selected_button, admin_id):
+        self.selected_admin_id = admin_id
+        for button in self.admin_buttons:
+            button.is_selected = button == selected_button
+            button.update_styles()
+
+    def update_scrollbar_visibility(self, admin=False):
+        if admin:
+            num_admins = len(self.admin_buttons)
+            if num_admins > 5:
+                self.admin_horizontal_scrollbar.show()
+            else:
+                self.admin_horizontal_scrollbar.hide()
+        else:
+            num_trainers = len(self.trainer_buttons)
+            if num_trainers > 5:
+                self.horizontal_scrollbar.show()
+            else:
+                self.horizontal_scrollbar.hide()
+
+    def open_edit_admin_window(self, admin_data):
+        self.edit_trainer_window = AddAdministratorWindow(admin_data)
+        self.edit_trainer_window.admin_updated.connect(self.update_admin_in_ui)
+        self.edit_trainer_window.show()
+        self.edit_trainer_window.raise_()
+
+    def update_admin_in_ui(self, admin_data):
+        for admin_widget in self.admin_buttons:
+            if admin_widget.trainer_id == admin_data["admin_id"]:
+                admin_widget.name = admin_data["name"]
+                admin_widget.surname = admin_data["surname"]
+                admin_widget.patronymic = admin_data["patronymic"]
+                admin_widget.phone = admin_data["phone"]
+                admin_widget.description = admin_data["description"]
+                admin_widget.username = admin_data["username"]
+
+                # Обновляем аватарку
+                image_data = admin_data["image"]
+                pixmap = QPixmap()
+
+                try:
+                    if isinstance(image_data, bytes):  # Если фото в формате bytes
+                        if not image_data:
+                            raise ValueError("Данные изображения пусты.")
+                        if not pixmap.loadFromData(QByteArray(image_data)):  # Конвертация в QPixmap
+                            raise ValueError("Ошибка загрузки из bytes")
+                    elif isinstance(image_data, str):  # Если передан путь
+                        if not os.path.exists(image_data):
+                            raise ValueError("Файл изображения не найден.")
+                        if not pixmap.load(image_data):  # Загружаем фото
+                            raise ValueError("Ошибка загрузки по пути")
+                    else:
+                        raise ValueError("Неизвестный формат изображения")
+                except ValueError as e:
+                    print(f"Ошибка при загрузке фото: {e}")
+                    pixmap.load(resources_path("group.png"))  # Устанавливаем fallback-изображение
+
+                # Масштабируем картинку перед установкой
+                pixmap = pixmap.scaled(
+                    admin_widget.avatar_width,
+                    admin_widget.avatar_height,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+
+                # Обновляем данные виджета
+                admin_widget.image_path = admin_data["image"]
+                admin_widget.name_label.setText(admin_data["name"])
+                admin_widget.avatar_label.setPixmap(pixmap)
+                admin_widget.avatar_label.repaint()  # Принудительная перерисовка
+                admin_widget.update_styles()
+                break
 
     def init_schedule_page(self):
         self.selected_trainer_id = None
@@ -505,18 +860,60 @@ class MainWindow(QWidget):
         self.previous_total_weeks = len(month_calendar)
         self.current_week = self.get_current_week_of_month(self.current_date)
         layout = QVBoxLayout(self.schedule_page)
+        layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
         layout.setObjectName("schedule_page")
 
-        # Секция с тренерами
-        self.trainers_layout = QHBoxLayout()
+        self.trainers_scroll_area = QScrollArea()
+        self.trainers_scroll_area.setStyleSheet("border:0px")
+        self.trainers_scroll_area.setWidgetResizable(True)
+        self.trainers_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Выключаем встроенный скролбар
+        self.trainers_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.trainers_scroll_area.setFixedHeight(200)
+
+        # Контейнер для тренеров
+        self.trainers_container = QWidget()
+        self.trainers_layout = QHBoxLayout(self.trainers_container)
+        self.trainers_layout.setSpacing(10)
         self.trainers_layout.setContentsMargins(0, 0, 0, 0)
-        self.trainers_layout.setSpacing(10)  # Меньше пространство между тренерами
         self.trainers_layout.setAlignment(Qt.AlignCenter)
         self.trainer_buttons = []
-        self.load_trainers()
 
-        layout.addLayout(self.trainers_layout)
+        self.trainers_scroll_area.setWidget(self.trainers_container)
+
+        self.horizontal_scrollbar = QScrollBar(Qt.Horizontal)
+
+        self.horizontal_scrollbar.setFixedHeight(10)
+        self.horizontal_scrollbar.setStyleSheet("""
+            QScrollBar:horizontal {
+                height: 8px;
+                background: white;
+            }
+            QScrollBar::handle:horizontal {
+                background: #5DEBE6;
+                border-radius: 4px;
+            }
+        """)
+
+        # === Связываем горизонтальный скролбар с QScrollArea ===
+        self.horizontal_scrollbar.valueChanged.connect(self.trainers_scroll_area.horizontalScrollBar().setValue)
+        self.trainers_scroll_area.horizontalScrollBar().valueChanged.connect(self.horizontal_scrollbar.setValue)
+        self.horizontal_scrollbar.hide()
+
+        # === Размещаем элементы (СНАЧАЛА СКРОЛБАР, ПОТОМ QScrollArea) ===
+        trainers_section_layout = QVBoxLayout()
+        trainers_section_layout.addWidget(self.horizontal_scrollbar)  # Скролбар сверху
+        trainers_section_layout.addWidget(self.trainers_scroll_area)  # Список тренеров
+        trainers_section_layout.setSpacing(0)
+        trainers_section_layout.setContentsMargins(0, 0, 0, 0)
+
+        layout.addLayout(trainers_section_layout)  # Добавляем в главный layout
+
+        # === Кнопка добавления тренера ===
+        self.add_trainer_button = HoverButton("+", 65, 65, 65, '#75A9A7', True, '', '', 10, '#5DEBE6')
+        self.add_trainer_button.clicked.connect(self.open_add_trainer_window)
+
+        self.load_trainers()
 
         # Секция расписания (изначально скрыта)
         self.schedule_group = QWidget()
@@ -526,9 +923,10 @@ class MainWindow(QWidget):
 
         # Навигация по месяцам
 
-        self.prev_month_button = SvgHoverButton("src/prev.svg", width=40, height=50, default_color='#75A9A7',
-                                           hover_color="#88F9F5")
-        self.prev_month_button.clicked.connect(lambda: self.change_month(-1,self.prev_month_button))
+        self.prev_month_button = SvgHoverButton(resources_path("src/prev.svg"), width=40, height=50,
+                                                default_color='#75A9A7',
+                                                hover_color="#88F9F5")
+        self.prev_month_button.clicked.connect(lambda: self.change_month(-1, self.prev_month_button))
 
         self.month_label = QLabel()
         self.month_label.setObjectName('month')
@@ -547,11 +945,11 @@ class MainWindow(QWidget):
         self.month_label.setFixedWidth(300)
         self.month_label.setAlignment(Qt.AlignCenter)
 
-        self.next_month_button = SvgHoverButton("src/next.svg", width=40, height=50, default_color='#75A9A7',
-                                           hover_color="#88F9F5")
+        self.next_month_button = SvgHoverButton(resources_path("src/next.svg"), width=40, height=50,
+                                                default_color='#75A9A7',
+                                                hover_color="#88F9F5")
 
-        self.next_month_button.clicked.connect(lambda: self.change_month(1,self.next_month_button))
-
+        self.next_month_button.clicked.connect(lambda: self.change_month(1, self.next_month_button))
 
         month_navigation_layout = QHBoxLayout()
         month_navigation_layout.setContentsMargins(0, 0, 0, 0)
@@ -592,7 +990,6 @@ class MainWindow(QWidget):
 
         layout.addWidget(self.schedule_group)
 
-
         # Инициализация кнопок недель и отображение дней
         if self.selected_trainer_id is not None:
             self.update_weeks_and_days(self.selected_trainer_id)
@@ -605,13 +1002,110 @@ class MainWindow(QWidget):
                 return week_index + 1
         return 1
 
+    def open_add_trainer_window(self):
+        """Открывает окно добавления тренера"""
+        self.add_trainer_window = AddTrainerWindow()
+        self.add_trainer_window.trainer_added.connect(self.add_trainer_to_ui)  # Подключаем сигнал
+        self.add_trainer_window.show()
+        self.add_trainer_window.raise_()
+
+    def remove_trainer_from_ui(self, trainer_widget):
+        """Удаляет тренера из UI и скрывает расписание, если он был выбран"""
+        if self.selected_trainer_id == trainer_widget.trainer_id:
+            self.schedule_group.setVisible(False)  # Скрываем расписание
+            self.selected_trainer_id = None  # Сбрасываем выбор тренера
+
+        trainer_widget.setParent(None)  # Убираем из родительского layout
+        trainer_widget.deleteLater()
+
+    def delete_trainer(self, trainer_id):
+        """
+        Удаляет тренера и каскадно удаляет все его записи в базе.
+        """
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Удаление")
+        message_box.setText("Вы подтверждаете удаление тренера?\nВсе слоты посещений с ним будут удалены.")
+        message_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        message_box.button(QMessageBox.Yes).setText("Да")
+        message_box.button(QMessageBox.No).setText("Нет")
+
+        reply = message_box.exec_()
+
+        if reply == QMessageBox.Yes:
+            query = "DELETE FROM trainer WHERE trainer_id = %s"
+            execute_query(query, (trainer_id,), fetch=False)
+
+            trainer_to_remove = None
+
+            # Удалить виджет тренера из UI
+            for trainer_widget in self.trainer_buttons:
+                if trainer_widget.trainer_id == trainer_id:
+                    trainer_to_remove = trainer_widget
+                    break
+
+            if trainer_to_remove:
+                self.trainers_layout.removeWidget(trainer_to_remove)
+                trainer_to_remove.deleteLater()
+                self.trainer_buttons.remove(trainer_to_remove)
+
+            # Если удалённый тренер был выбран, скрываем расписание
+            if self.selected_trainer_id == trainer_id:
+                self.schedule_group.setVisible(False)
+                self.selected_trainer_id = None
+
+            # Перепривязываем события, чтобы не осталось "битых" ссылок
+            valid_trainers = [t for t in self.trainer_buttons if hasattr(t, "trainer_id")]
+
+            for trainer_widget in valid_trainers:
+                trainer_widget.clicked.disconnect()
+                trainer_widget.clicked.connect(
+                    lambda btn=trainer_widget, tid=trainer_widget.trainer_id: self.select_trainer(btn, tid)
+                )
+            self.update_scrollbar_visibility()
+
+    def update_scrollbar_visibility(self, admin=False):
+        """
+        Включает горизонтальный скроллбар, если в `self.trainers_layout` больше 5 виджетов.
+        """
+        if admin:
+            num_trainers = len(self.admin_buttons)  # Количество тренеров
+
+            if num_trainers > 5:
+                self.admin_horizontal_scrollbar.show()
+            else:
+                self.admin_horizontal_scrollbar.hide()
+        else:
+            num_trainers = len(self.trainer_buttons)  # Количество тренеров
+
+            if num_trainers > 5:
+                self.horizontal_scrollbar.show()
+            else:
+                self.horizontal_scrollbar.hide()
+
+    def add_trainer_to_ui(self, trainer_data):
+        """Добавляет нового тренера в UI"""
+        trainer_widget = self.create_personal_widget_to_slot(
+            id=trainer_data["id"],
+            name=trainer_data["name"],
+            surname=trainer_data["surname"],
+            patronymic=trainer_data["patronymic"],
+            phone=trainer_data["phone"],
+            description=trainer_data["description"],
+            image_data=trainer_data["image"]
+        )
+        trainer_widget.setFixedWidth(300)
+        trainer_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.trainers_layout.insertWidget(len(self.trainer_buttons) - 1, trainer_widget)
+        self.trainer_buttons.insert(len(self.trainer_buttons) - 1, trainer_widget)
+        self.update_scrollbar_visibility()
+        trainer_widget.clicked.emit()
+
     def select_trainer(self, selected_button, trainer_id):
         """
         Обрабатывает выбор тренера и обновляет состояния кнопок.
         :param selected_button: Кнопка выбранного тренера.
         :param trainer_id: ID выбранного тренера.
         """
-
 
         # Обновление состояния кнопок
         self.selected_trainer_id = trainer_id
@@ -637,16 +1131,143 @@ class MainWindow(QWidget):
         # Загрузка недель и дней для выбранного тренера
         self.update_weeks_and_days(trainer_id)
 
-    def create_trainer_widget_to_slot(self, trainer_id, name, image_path):
-        """Создаёт виджет тренера на основе TrainerButton."""
-        trainer_button = TrainerButton(name, image_path="Group.png", avatar_width=60, avatar_height=60,
-                                       font_size=20, border_width_normal=4, border_color_normal='#75A9A7',
-                                       border_width_hover=4, border_color_hover="#88F9F5",
-                                       border_width_selected=5, border_color_selected="#88F9F5"
-                                       )
+    def create_personal_widget_to_slot(self, id, name, surname, patronymic, phone, description, image_data,
+                                       admin=False, username=None, user_id=None, password_hash=None):
+        """Создаёт виджет тренера на основе TrainerButton.
 
-        trainer_button.clicked.connect(lambda: self.select_trainer(trainer_button, trainer_id))
-        return trainer_button
+        Аргументы:
+        - trainer_id: ID тренера
+        - name: Имя тренера
+        - image_data: Либо `bytes` (из БД), либо `str` (путь к файлу), либо `None`
+        """
+
+        if isinstance(image_data, memoryview):  # Данные из БД переданы как memoryview
+            image_data = bytes(image_data)  # Конвертация в bytes
+
+        if isinstance(image_data, bytes):  # Фото в формате bytes
+            pixmap = QPixmap()
+            if pixmap.loadFromData(QByteArray(image_data)):  # Конвертируем в QPixmap
+                image_path = pixmap
+            else:
+                image_path = resources_path("Group.png")  # Если не загружается, fallback
+        elif isinstance(image_data, str) and os.path.exists(image_data):  # Локальный файл
+            image_path = image_data
+        elif isinstance(image_data, QByteArray):  # Локальный файл
+            pixmap = QPixmap()
+            if pixmap.loadFromData(image_data):  # Конвертируем в QPixmap
+                image_path = pixmap
+            else:
+                image_path = resources_path("Group.png")  # Если не загружается, fallback
+        else:
+            image_path = resources_path("Group.png")  # Если фото нет, дефолтная заглушка
+        # В методе create_personal_widget_to_slot
+        if admin:
+            button = TrainerButton(
+                name=name,
+                surname=surname,
+                patronymic=patronymic,
+                phone=phone,
+                description=description,
+                image_path=image_path,
+                trainer_id=id,
+                admin_role=self.admin_role,
+                admin=admin,
+                username=username,
+                user_id=user_id,
+                password_hash=password_hash,
+                avatar_width=60,
+                avatar_height=60,
+                font_size=20,
+                border_width_normal=4,
+                border_color_normal='#75A9A7',
+                border_width_hover=4,
+                border_color_hover="#88F9F5",
+                border_width_selected=5,
+                border_color_selected="#88F9F5"
+            )
+            button.clicked.connect(lambda: self.select_admin(button, id))
+            button.delete_clicked.connect(lambda _, tid=id: self.delete_admin(tid))
+            button.edit_clicked.connect(self.open_edit_admin_window)
+        else:
+            button = TrainerButton(
+                name=name,
+                surname=surname,
+                patronymic=patronymic,
+                phone=phone,
+                description=description,
+                image_path=image_path,
+                trainer_id=id,
+                admin_role=self.admin_role,
+                avatar_width=60,
+                avatar_height=60,
+                font_size=20,
+                border_width_normal=4,
+                border_color_normal='#75A9A7',
+                border_width_hover=4,
+                border_color_hover="#88F9F5",
+                border_width_selected=5,
+                border_color_selected="#88F9F5"
+            )
+            button.clicked.connect(lambda: self.select_trainer(button, id))
+            button.delete_clicked.connect(lambda _, tid=id: self.delete_trainer(tid))
+            button.edit_clicked.connect(self.open_edit_trainer_window)
+        return button
+
+    def open_edit_trainer_window(self, trainer_data):
+        print(trainer_data)
+        """Открывает окно редактирования тренера с заполненными данными."""
+        self.edit_trainer_window = AddTrainerWindow(trainer_data)  # Передаём данные тренера
+        self.edit_trainer_window.trainer_updated.connect(self.update_trainer_in_ui)  # Подключаем сигнал
+        self.edit_trainer_window.show()
+        self.edit_trainer_window.raise_()
+
+    def update_trainer_in_ui(self, trainer_data):
+        """Обновляет данные тренера в UI после редактирования."""
+        for trainer_widget in self.trainer_buttons:
+            if trainer_widget.trainer_id == trainer_data["id"]:
+                # Обновляем текстовые данные
+                trainer_widget.name = trainer_data["name"]
+                trainer_widget.surname = trainer_data["surname"]
+                trainer_widget.patronymic = trainer_data["patronymic"]
+                trainer_widget.phone = trainer_data["phone"]
+                trainer_widget.description = trainer_data["description"]
+
+                # Обновляем изображение
+                image_data = trainer_data["image"]
+                pixmap = QPixmap()
+
+                try:
+                    if isinstance(image_data, bytes):  # Если фото в формате bytes
+                        if not image_data:
+                            raise ValueError("Данные изображения пусты.")
+                        if not pixmap.loadFromData(QByteArray(image_data)):  # Конвертация в QPixmap
+                            raise ValueError("Ошибка загрузки из bytes")
+                    elif isinstance(image_data, str):  # Если передан путь
+                        if not os.path.exists(image_data):
+                            raise ValueError("Файл изображения не найден.")
+                        if not pixmap.load(image_data):  # Загружаем фото
+                            raise ValueError("Ошибка загрузки по пути")
+                    else:
+                        raise ValueError("Неизвестный формат изображения")
+                except ValueError as e:
+                    print(f"Ошибка при загрузке фото: {e}")
+                    pixmap.load(resources_path("group.png"))  # Устанавливаем fallback-изображение
+
+                # Масштабируем картинку перед установкой
+                pixmap = pixmap.scaled(
+                    trainer_widget.avatar_width,
+                    trainer_widget.avatar_height,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+
+                # Обновляем данные виджета
+                trainer_widget.image_path = trainer_data["image"]
+                trainer_widget.name_label.setText(trainer_data["name"])
+                trainer_widget.avatar_label.setPixmap(pixmap)
+                trainer_widget.avatar_label.repaint()  # Принудительная перерисовка
+                trainer_widget.update_styles()
+                break
 
     def update_weeks_and_days(self, trainer_id):
         """
@@ -729,7 +1350,6 @@ class MainWindow(QWidget):
         day_frame.setObjectName('day_f')
         day_frame.setFixedWidth(160)
         day_frame.setFixedHeight(250)
-
 
         if is_enabled:
             day_frame.setStyleSheet("""
@@ -816,40 +1436,79 @@ class MainWindow(QWidget):
 
         for item in schedule_data:
             entry_widget = QWidget()
-            entry_layout = QVBoxLayout(entry_widget)
+            entry_layout = QHBoxLayout(entry_widget)
             entry_layout.setContentsMargins(0, 0, 0, 0)
-            entry_layout.setSpacing(2)
+            entry_layout.setSpacing(5)
 
-            time_label = QLabel(item['time'])
+            info_layout = QVBoxLayout()
+            info_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            info_layout.setSpacing(2)
+
+            time_label = QLabel(f"{item['start_time'].strftime('%H:%M')} - {item['end_time'].strftime('%H:%M')}")
             time_label.setAlignment(Qt.AlignCenter)
-            time_label.setStyleSheet(f"""
-                QLabel {{
-                    font-family: 'Unbounded';
-                    font-size: 14px;
-                    font-weight: bold;
-                    color: {'black' if is_enabled else '#a0a0a0'};
-                }}
-            """)
-            entry_layout.addWidget(time_label)
+            if self.admin_role == "Управляющий":
+                time_label.setStyleSheet("""
+                                                    QLabel {
+                                                        font-family: 'Unbounded';
+                                                        font-size: 12px;
+                                                        font-weight: bold;
+                                                        color: black;
+                                                    }
+                                                """)
+            else:
+                time_label.setStyleSheet("""
+                                                                        QLabel {
+                                                                            font-family: 'Unbounded';
+                                                                            font-size: 14px;
+                                                                            font-weight: bold;
+                                                                            color: black;
+                                                                        }
+                                                                    """)
+            info_layout.addWidget(time_label)
 
-            client_label = QLabel(item['client'])
+            client_label = ClickableLabelForSlots(item['client'], item.get('client_id'),self.admin_role)  # Используем ClickableLabel
             client_label.setAlignment(Qt.AlignCenter)
             client_label.setWordWrap(True)
-            client_label.setStyleSheet(f"""
-                QLabel {{
-                    font-family: 'Unbounded';
-                    font-size: 14px;
-                    color: {'black' if is_enabled else '#a0a0a0'};
-                }}
-            """)
-            entry_layout.addWidget(client_label)
+            if self.admin_role == "Управляющий":
+                client_label.setStyleSheet(f"""
+                                            QLabel {{
+                                                font-family: 'Unbounded';
+                                                font-size: 12px;
+                                                font-weight:bold;
+                                                color: {'black' if is_enabled else '#a0a0a0'};
+                                                text-decoration: underline;
+                                            }}
+                                        """)
+            else:
+                client_label.setStyleSheet(f"""
+                                                                QLabel {{
+                                                                    font-family: 'Unbounded';
+                                                                    font-size: 14px;
+                                                                    font-weight:bold;
+                                                                    color: {'black' if is_enabled else '#a0a0a0'};
+                                                                    text-decoration: underline;
+                                                                }}
+                                                            """)
+            info_layout.addWidget(client_label)
+
+            # --- Добавляем info_layout (время и клиент) в entry_layout (основной горизонтальный layout) ---
+            entry_layout.addLayout(info_layout)
+
+            # --- Добавляем кнопку удаления, если self.admin_role == "Управляющий" ---
+            if self.admin_role == "Управляющий":
+                delete_button = HoverButton("Х", 25, 25, 30, '#8F2D31', True, '#8F2D31', 'red', 5, 'red')
+
+                delete_button.clicked.connect(
+                    lambda _, slot_id=item.get('slot_id'), widget=entry_widget, day_date=day:
+                    self.delete_slot(slot_id, widget, day_date)
+                )
+
+                entry_layout.addWidget(delete_button, alignment=Qt.AlignRight)  # Кнопка закрепляется справа
 
             container_layout.addWidget(entry_widget, alignment=Qt.AlignTop | Qt.AlignHCenter)
 
         add_button = HoverButton("+", 30, 30, 40, '#75A9A7', True, '', '', 5, '#5DEBE6', 10)
         add_button.setFixedHeight(40)
-
-
 
         if not is_enabled:
             add_button.disable_button()
@@ -867,15 +1526,70 @@ class MainWindow(QWidget):
     def open_add_slot_window(self, scroll_area, day):
 
         existing_slots = self.extract_slots_from_scroll_area(scroll_area)
-        print(self.selected_client,123)
-        print(self.subscription_data,321)
+
         self.add_slot_window = AddSlotWindow(
             selected_client=self.selected_client,
             subscription_data=self.subscription_data,
             existing_slots=existing_slots,
-            selected_date=day
+            selected_date=day,
+            trainer_id=self.selected_trainer_id  # Передаем ID тренера
         )
+        self.add_slot_window.slot_added.connect(self.handle_slot_added)
         self.add_slot_window.show()
+
+    def handle_slot_added(self, slot_data):
+        """Обновляет UI после добавления слота"""
+        day_date = slot_data["date"]  # Дата, переданная из `AddSlotWindow`
+
+        if not isinstance(day_date, datetime.date):
+            print("Ошибка: неверный формат даты", day_date)
+            return
+
+        # Преобразуем QTime в строковый формат HH:MM
+        if isinstance(slot_data["start_time"], QTime):
+            slot_data["start_time"] = slot_data["start_time"].toString("HH:mm")
+        if isinstance(slot_data["end_time"], QTime):
+            slot_data["end_time"] = slot_data["end_time"].toString("HH:mm")
+
+        # **Находим существующий cache_key (по неделе)**
+        cache_key = None
+        for key in self.schedule_cache.keys():
+            # Смотрим, что тренер и дата совпадают
+            if key[0] == self.selected_trainer_id and day_date in self.schedule_cache[key]:
+                cache_key = key
+                break
+
+        # Если нужного cache_key нет, создаём новый
+        if cache_key is None:
+            cache_key = (self.selected_trainer_id, day_date)
+            self.schedule_cache[cache_key] = {}
+
+        # **Добавляем слот в день (создаем если еще нет)**
+        if day_date not in self.schedule_cache[cache_key]:
+            self.schedule_cache[cache_key][day_date] = []
+
+        # **Проверяем, что слот ещё не добавлен**
+        existing_slot = next((s for s in self.schedule_cache[cache_key][day_date]
+                              if s["start_time"] == slot_data["start_time"] and s["end_time"] == slot_data["end_time"]),
+                             None)
+
+        if existing_slot:
+            print(f"Слот {slot_data['start_time']} - {slot_data['end_time']} уже существует!")
+        else:
+            self.schedule_cache[cache_key][day_date].append(slot_data)
+            print(f"Слот добавлен в кэш: {slot_data}")
+
+        print(f"Обновленный кэш: {self.schedule_cache}")
+
+        # **Обновляем UI**
+        if day_date in self.day_widgets:
+            print(f"Обновляем виджет для {day_date}")
+            self.update_day_widget(self.day_widgets[day_date], self.schedule_cache[cache_key][day_date],
+                                   is_enabled=True, day=day_date)
+        else:
+            print(f"Ошибка: виджет для {day_date} не найден")
+
+        print(f"После обновления UI: {self.schedule_cache.get(cache_key, {})}")
 
     def display_added_slot(self, slot_data):
         print(f"Добавленный слот: {slot_data}")
@@ -885,7 +1599,6 @@ class MainWindow(QWidget):
 
         month_calendar = calendar.monthcalendar(self.current_date.year, self.current_date.month)
         self.previous_total_weeks = len(month_calendar)
-
 
         year = self.current_date.year
         month = self.current_date.month + delta
@@ -901,16 +1614,15 @@ class MainWindow(QWidget):
         self.update_month_label()
         self.update_weeks_and_days(self.selected_trainer_id)
 
-
-
     def update_month_label(self):
         """Обновляет текст заголовка месяца на русском языке, добавляя год только при необходимости."""
         current_year = datetime.date.today().year
-        month_name = self.current_date.strftime("%B").capitalize()  # Название месяца с заглавной буквы
+        month_name = format_date(self.current_date, "MMMM",
+                                 locale="ru").capitalize()  # Название месяца с заглавной буквы
         if self.current_date.year != current_year:
-            self.month_label.setText(f"{month_name} {self.current_date.year}")
+            self.month_label.setText(f"{correct_to_nominative_case(month_name)} {self.current_date.year}")
         else:
-            self.month_label.setText(month_name)
+            self.month_label.setText(f"{correct_to_nominative_case(month_name)}")
 
     # def update_existing_week_widgets(self):
     #     """
@@ -990,14 +1702,13 @@ class MainWindow(QWidget):
 
                 is_enabled = (
                                      (
-                                                 subscription_start and subscription_end and subscription_start <= day_date <= subscription_end)
+                                             subscription_start and subscription_end and subscription_start <= day_date <= subscription_end)
                                      or (subscription_start is None and subscription_end is None)
                              ) and day_date >= today
 
                 # Создание виджета дня с учетом активности
 
-
-                day_widget = self.create_day_widget(day, day_date,[], is_enabled=is_enabled)
+                day_widget = self.create_day_widget(day, day_date, [], is_enabled=is_enabled)
                 buffer_layout.addWidget(day_widget, 0, i)
 
                 self.day_widgets[day_date] = day_widget
@@ -1165,7 +1876,8 @@ class MainWindow(QWidget):
             widget = container_layout.takeAt(0).widget()
             if widget:
                 widget.deleteLater()
-
+        spacer = QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Minimum)
+        container_layout.addItem(spacer)
         if not schedule_data:
             print("Данные расписания пусты. Добавляем только кнопку '+'.")
         else:
@@ -1174,40 +1886,94 @@ class MainWindow(QWidget):
                 print(f"Добавляем запись: {item}")
                 # Контейнер для одной записи
                 entry_widget = QWidget()
-                entry_layout = QVBoxLayout(entry_widget)
+                entry_layout = QHBoxLayout(entry_widget)
                 entry_layout.setContentsMargins(0, 0, 0, 0)
-                entry_layout.setSpacing(2)
+                entry_layout.setSpacing(5)
+                entry_widget.setFixedWidth(142)
 
-                # Время
-                time_label = QLabel(f"{item['start_time'].strftime('%H:%M')} - {item['end_time'].strftime('%H:%M')}")
+                info_layout = QVBoxLayout()
+                info_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                info_layout.setSpacing(2)
+                fixed_width = 117 if self.admin_role == "Управляющий" else 142  # Меняем размер в зависимости от роли
+
+                if isinstance(item['start_time'], QTime) and isinstance(item['end_time'], QTime):
+                    time_label = QLabel(
+                        f"{item['start_time'].toString('HH:mm')} - {item['end_time'].toString('HH:mm')}")
+                elif isinstance(item['start_time'], datetime.datetime) and isinstance(item['end_time'],
+                                                                                      datetime.datetime):
+                    time_label = QLabel(
+                        f"{item['start_time'].time().strftime('%H:%M')} - {item['end_time'].time().strftime('%H:%M')}")
+                elif isinstance(item['start_time'], datetime.time) and isinstance(item['end_time'], datetime.time):
+                    time_label = QLabel(
+                        f"{item['start_time'].strftime('%H:%M')} - {item['end_time'].strftime('%H:%M')}")
+                else:
+                    time_label = QLabel(f"{item['start_time']} - {item['end_time']}")
+
                 time_label.setAlignment(Qt.AlignCenter)
-                time_label.setStyleSheet("""
-                    QLabel {
-                        font-family: 'Unbounded';
-                        font-size: 14px;
-                        font-weight: bold;
-                        color: black;
-                    }
-                """)
-                entry_layout.addWidget(time_label)
+                time_label.setFixedWidth(fixed_width)
+                if self.admin_role == "Управляющий":
+                    time_label.setStyleSheet("""
+                                        QLabel {
+                                            font-family: 'Unbounded';
+                                            font-size: 12px;
+                                            font-weight: bold;
+                                            color: black;
+                                        }
+                                    """)
+                else:
+                    time_label.setStyleSheet("""
+                                                            QLabel {
+                                                                font-family: 'Unbounded';
+                                                                font-size: 14px;
+                                                                font-weight: bold;
+                                                                color: black;
+                                                            }
+                                                        """)
+                info_layout.addWidget(time_label)
 
-                # Клиент
-                client_label = QLabel(item['client'])
+                client_label = ClickableLabelForSlots(item['client'],
+                                                      item.get('client_id'),self.admin_role)  # Используем ClickableLabel
                 client_label.setAlignment(Qt.AlignCenter)
                 client_label.setWordWrap(True)
-                client_label.setFixedWidth(131)
-                client_label.setStyleSheet("""
-                    QLabel {
-                        font-family: 'Unbounded';
-                        font-size: 14px;
-                        color: black;
-                    }
-                """)
-                entry_layout.addWidget(client_label)
+                if self.admin_role == "Управляющий":
+                    client_label.setStyleSheet(f"""
+                                QLabel {{
+                                    font-family: 'Unbounded';
+                                    font-size: 12px;
+                                    font-weight:bold;
+                                    color: {'black' if is_enabled else '#a0a0a0'};
+                                 
+                                }}
+                            """)
+                else:
+                    client_label.setStyleSheet(f"""
+                                                    QLabel {{
+                                                        font-family: 'Unbounded';
+                                                        font-size: 14px;
+                                                        font-weight:bold;
+                                                        color: {'black' if is_enabled else '#a0a0a0'};
+                                                  
+                                                    }}
+                                                """)
+                client_label.setFixedWidth(fixed_width)
+                info_layout.addWidget(client_label)
+
+                # --- Добавляем info_layout (время и клиент) в entry_layout (основной горизонтальный layout) ---
+                entry_layout.addLayout(info_layout)
+
+                # --- Добавляем кнопку удаления, если self.admin_role == "Управляющий" ---
+                if self.admin_role == "Управляющий":
+                    delete_button = HoverButton("Х", 25, 25, 30, '#8F2D31', True, '#8F2D31', 'red', 5, 'red')
+
+                    delete_button.clicked.connect(
+                        lambda _, slot_id=item.get('slot_id'), widget=entry_widget, day_date=day:
+                        self.delete_slot(slot_id, widget, day_date)
+                    )
+
+                    entry_layout.addWidget(delete_button, alignment=Qt.AlignRight)  # Кнопка закрепляется справа
 
                 container_layout.addWidget(entry_widget, alignment=Qt.AlignTop | Qt.AlignHCenter)
 
-        # Добавление кнопки "+" для добавления новых слотов
         print("Добавляем кнопку '+'")
         add_button = HoverButton("+", 30, 30, 40, '#75A9A7', True, '', '', 5, '#5DEBE6')
         add_button.clicked.connect(lambda: self.open_add_slot_window(container_layout, day))
@@ -1219,18 +1985,61 @@ class MainWindow(QWidget):
 
         print("Обновление виджета завершено.")
 
+    def delete_slot(self, slot_id, slot_widget, day_date):
+        """
+        Удаляет слот по его ID из базы данных, интерфейса и кэша.
+        """
+        reply = QMessageBox.question(
+            self, "Удаление слота",
+            "Вы уверены, что хотите удалить этот слот?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            # 1. Удаление из базы данных
+            query = "DELETE FROM training_slots WHERE slot_id = %s"
+            execute_query(query, (slot_id,), fetch=False)
+
+            # 2. Удаление из интерфейса (из виджета)
+            slot_widget.setParent(None)
+            slot_widget.deleteLater()
+
+            # 3. Удаление из `schedule_cache`
+            cache_key = None
+            for key in self.schedule_cache.keys():
+                if key[0] == self.selected_trainer_id and day_date in self.schedule_cache[key]:
+                    cache_key = key
+                    break
+
+            if cache_key:
+                updated_slots = [slot for slot in self.schedule_cache[cache_key][day_date] if
+                                 slot["slot_id"] != slot_id]
+
+                if updated_slots:
+                    self.schedule_cache[cache_key][day_date] = updated_slots
+                else:
+                    del self.schedule_cache[cache_key][day_date]  # Удаляем день, если слоты закончились
+
+                    # Если после удаления `day_date` больше нет данных, удаляем `cache_key`
+                    if not self.schedule_cache[cache_key]:
+                        del self.schedule_cache[cache_key]
+
+                print(f"Слот {slot_id} удалён из кэша для {day_date}")
+
+            QMessageBox.information(self, "Удаление", "Слот успешно удалён.")
+
     def switch_to_page(self, page):
         if page == self.main_page:
             self.profile_button.attrib = "stroke"
-            self.profile_button.svg_path = "src/group.svg"
+            self.profile_button.svg_path = resources_path("src/group.svg")
             self.profile_button.load_svg_with_color()
             self.profile_button.update_buffer()
             self.profile_button.update()
             self.profile_button.clicked.disconnect()
             self.profile_button.clicked.connect(lambda: self.switch_to_page(self.schedule_page))
-        elif page == self.schedule_page:
+        elif page == self.schedule_page or page == self.administrator_page:
             self.profile_button.attrib = "fill"
-            self.profile_button.svg_path = "src/home.svg"
+            self.profile_button.svg_path = resources_path("src/home.svg")
             self.profile_button.load_svg_with_color()
             self.profile_button.update_buffer()
             self.profile_button.update()
@@ -1248,6 +2057,8 @@ class MainWindow(QWidget):
             self.from_add_client = False
         QApplication.processEvents()
         self.stack.setCurrentWidget(page)
+
+
 
 
     def closeEvent(self, event):

@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt, QPoint, QRectF, QTime
+from PyQt5.QtCore import Qt, QPoint, QRectF, QTime, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QColor
 from PyQt5.QtWidgets import QLabel, QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QGridLayout, \
     QSizePolicy, QLineEdit, QMessageBox
@@ -6,13 +6,19 @@ from datetime import datetime
 
 from database import execute_query
 from hover_button import HoverButton
-
+def some_function():
+    from hover_button import HoverButton  # Импорт внутри функции
+    button = HoverButton()
 
 class ClientProfileWindow(QWidget):
-    def __init__(self, client_id):
+    status_updated = pyqtSignal(str)
+
+    def __init__(self, client_id, role):
         super().__init__()
         self.client_id = client_id
+        self.role = role
         self.setWindowTitle("Профиль клиента")
+
         self.setGeometry(750, 750, 900, 560)
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -20,6 +26,8 @@ class ClientProfileWindow(QWidget):
         self.oldPos = self.pos()
         self.radius = 18
         self.borderWidth = 5
+        from utils import center
+        center(self)
         self.init_ui()
 
     def init_ui(self):
@@ -70,7 +78,8 @@ class ClientProfileWindow(QWidget):
         self.phone_label = QLabel("+7xxxxxxxxxx")
         self.phone_label.setStyleSheet("font-family: 'Unbounded'; font-size: 20px; font-weight: bold; color: black;")
         self.start_date_label = QLabel("С 09.10.23")
-        self.start_date_label.setStyleSheet("font-family: 'Unbounded'; font-size: 17px; font-weight: bold; color: #05A9A3;")
+        self.start_date_label.setStyleSheet(
+            "font-family: 'Unbounded'; font-size: 17px; font-weight: bold; color: #05A9A3;")
         self.start_date_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         phone_date_layout.addWidget(self.phone_label)
         phone_date_layout.addWidget(self.start_date_label)
@@ -78,7 +87,8 @@ class ClientProfileWindow(QWidget):
 
         # Абонемент
         self.subscription_label = QLabel("Абонемент 13.09.24 - 13.10.24\nСтандарт, 8 занятий (4 из 8)")
-        self.subscription_label.setStyleSheet("font-family: 'Unbounded'; font-size: 21px; font-weight: bold; color: #05A9A3;")
+        self.subscription_label.setStyleSheet(
+            "font-family: 'Unbounded'; font-size: 21px; font-weight: bold; color: #05A9A3;")
         self.subscription_label.setWordWrap(True)
         self.subscription_label.setContentsMargins(0, 0, 0, 10)
         client_info_layout.addWidget(self.subscription_label)
@@ -105,7 +115,6 @@ class ClientProfileWindow(QWidget):
         self.history_layout.setSpacing(0)
         self.history_layout.setContentsMargins(0, 0, 0, 0)
 
-
         history_title = QLabel("История посещений")
         history_title.setStyleSheet("""
             QLabel {
@@ -117,7 +126,8 @@ class ClientProfileWindow(QWidget):
         """)
         self.history_layout.addWidget(history_title, alignment=Qt.AlignTop | Qt.AlignHCenter)
 
-        self.add_visit_button = HoverButton("Добавить", 350, 60, 20, '#45DB77', True, '#45DB77', '#4BFF87', 8, '#4BFF87', 3, 700)
+        self.add_visit_button = HoverButton("Добавить", 350, 60, 20, '#45DB77', True, '#45DB77', '#4BFF87', 8,
+                                            '#4BFF87', 3, 700)
         self.add_visit_button.clicked.connect(self.show_add_visit_widget)
 
         self.scroll_area = QScrollArea()
@@ -125,7 +135,10 @@ class ClientProfileWindow(QWidget):
         self.scroll_area.setStyleSheet("border: 0px; padding: 0px; margin: 0px;")
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll_area.setFixedHeight(410)
+        if self.role == "Управляющий":
+            self.scroll_area.setFixedHeight(460)
+        else:
+            self.scroll_area.setFixedHeight(410)
         self.scroll_area.setStyleSheet(f"""
             QScrollArea {{
                 border: 0px;
@@ -223,30 +236,61 @@ class ClientProfileWindow(QWidget):
         TO_CHAR(next_training_start, 'DD.MM.YY HH24:MI') AS next_training_start,
         TO_CHAR(next_training_end, 'DD.MM.YY HH24:MI') AS next_training_end,
         next_trainer_name,
-        is_valid -- Включаем is_valid в выводимые данные
+        is_valid 
     FROM client_data;
-
         """
         result = execute_query(query, (self.client_id,))
         if result:
             client_data = result[0]
             is_valid = client_data[12]  # Индекс колонки is_valid
 
-            if not is_valid:
-                self.add_visit_button.setEnabled(False)
+            # Проверяем наличие незавершённого посещения
+            active_visit_query = """
+                    SELECT time_start, time_end, in_gym
+                    FROM visit_fitness_room
+                    WHERE client = %s AND in_gym = TRUE AND time_end IS NULL
+                    LIMIT 1;
+                    """
+            active_visit_result = execute_query(active_visit_query, (self.client_id,))
+            has_active_visit = bool(active_visit_result)  # True, если есть активное посещение без time_end
 
+            if not is_valid:
+                # Абонемент не активен
+                self.add_visit_button.setEnabled(False)
                 self.add_visit_button.setText("Абонемент не активен")
                 self.add_visit_button.set_border_color("#FF0000")
                 self.add_visit_button.set_font_color("#FF0000")
                 self.add_visit_button.set_hover_border_color("#FF0000")
                 self.add_visit_button.set_hover_text_color("#FF0000")
-
-
+            else:
+                if has_active_visit:
+                    # Если клиент находится в зале без завершённого посещения
+                    self.add_visit_button.setEnabled(True)
+                    self.add_visit_button.setText("Закончить посещение")
+                    self.add_visit_button.set_border_color("#FFA500")
+                    self.add_visit_button.set_font_color("#FFA500")
+                    self.add_visit_button.set_hover_border_color("#FFB347")
+                    self.add_visit_button.set_hover_text_color("#FFB347")
+                    # Переназначаем действие кнопки на завершение посещения
+                    self.add_visit_button.clicked.disconnect()
+                    self.add_visit_button.clicked.connect(self.finish_visit)
+                else:
+                    # Клиент не в зале или посещение завершено
+                    self.add_visit_button.setEnabled(True)
+                    self.add_visit_button.setText("Добавить посещение")
+                    self.add_visit_button.set_border_color("#45DB77")
+                    self.add_visit_button.set_font_color("#45DB77")
+                    self.add_visit_button.set_hover_border_color("#4BFF87")
+                    self.add_visit_button.set_hover_text_color("#4BFF87")
+                    # Переназначаем действие кнопки на добавление нового посещения
+                    self.add_visit_button.clicked.disconnect()
+                    self.add_visit_button.clicked.connect(self.show_add_visit_widget)
 
             self.update_ui_with_client_data(result[0])
 
         visit_query = """
             SELECT 
+            v.visit_id,  -- Добавляем visit_id
             TO_CHAR(v.time_start, 'DD.MM.YY') AS date,
             TO_CHAR(v.time_start, 'HH24:MI') || ' - ' || TO_CHAR(v.time_end, 'HH24:MI') AS time,
             CASE 
@@ -258,26 +302,108 @@ class ClientProfileWindow(QWidget):
                     TO_CHAR(s.valid_since, 'DD.MM.YY') || ' - ' || TO_CHAR(s.valid_until, 'DD.MM.YY')
                 ELSE ''
             END AS period
-        FROM visit_fitness_room v
-        LEFT JOIN client c ON v.client = c.client_id
-        LEFT JOIN subscription s ON c.subscription = s.subscription_id
-        WHERE v.client = %s
-        ORDER BY v.time_start DESC;
+            FROM visit_fitness_room v
+            LEFT JOIN client c ON v.client = c.client_id
+            LEFT JOIN subscription s ON c.subscription = s.subscription_id
+            WHERE v.client = %s
+            AND v.time_end IS NOT NULL
+            ORDER BY v.time_start DESC;
         """
+
         visit_results = execute_query(visit_query, (self.client_id,))
+
+        # Очищаем старые записи о посещениях перед добавлением новых
+        for i in reversed(range(self.container_layout.count())):
+            item = self.container_layout.itemAt(i)
+            widget = item.widget()
+            # Удаляем только записи посещений, не затрагивая кнопку "Добавить"
+            if widget and widget is not self.add_visit_button:
+                widget.setParent(None)
+                widget.deleteLater()
+
         if visit_results:
             self.existing_visits = [{
-                'date': visit[0],
-                'time': visit[1],
-                'type': visit[2],
-                'period': visit[3] if visit[2] == "По абонементу" else ""
+                'visit_id': visit[0],  # Добавляем visit_id
+                'date': visit[1],
+                'time': visit[2],
+                'type': visit[3],
+                'period': visit[4] if visit[3] == "По абонементу" else ""
             } for visit in visit_results]
+
             self.container_layout.insertWidget(0, self.add_visit_button)
             for visit in self.existing_visits:
                 visit_widget = self.create_visit_widget(visit)
-                self.container_layout.insertWidget(1, visit_widget)  # Добавляем после кнопки "Добавить"
+                self.container_layout.insertWidget(1, visit_widget)
         else:
             self.existing_visits = []
+
+    def finish_visit(self):
+        # Запрос для получения текущего активного посещения
+        query = """
+        SELECT visit_id, time_start
+        FROM visit_fitness_room
+        WHERE client = %s AND in_gym = TRUE AND time_end IS NULL
+        LIMIT 1;
+        """
+        result = execute_query(query, (self.client_id,))
+
+        if result:
+            visit_id, time_start = result[0]
+
+            # Устанавливаем максимальное допустимое время завершения посещения (22:00 дня начала посещения)
+            max_end_time = time_start.replace(hour=22, minute=0, second=0, microsecond=0)
+
+            # Если текущее время превышает 22:00 дня начала посещения, устанавливаем конец на max_end_time
+            current_time = datetime.now()
+            if current_time > max_end_time:
+                time_end = max_end_time
+            else:
+                time_end = current_time
+
+            # Обновляем запись посещения в БД
+            update_query = """
+            UPDATE visit_fitness_room
+            SET time_end = %s, in_gym = FALSE
+            WHERE visit_id = %s
+            RETURNING time_start, time_end;
+            """
+            update_result = execute_query(update_query, (time_end, visit_id))
+
+            if update_result:
+                self.status_updated.emit("○ Вне зала")
+                QMessageBox.information(self, "Успех", "Посещение успешно завершено.")
+                self.load_client_data()
+
+            else:
+                # Ошибка при обновлении
+                QMessageBox.warning(self, "Ошибка", "Не удалось завершить посещение.")
+        else:
+            # Если нет активного посещения
+            QMessageBox.warning(self, "Ошибка", "Активное посещение не найдено.")
+
+    def update_button_for_add_visit(self):
+        """
+        Настраивает кнопку для добавления нового посещения.
+        """
+        self.add_visit_button.setText("Добавить")
+        self.add_visit_button.set_border_color("#45DB77")
+        self.add_visit_button.set_font_color("#45DB77")
+        self.add_visit_button.set_hover_border_color("#4BFF87")
+        self.add_visit_button.set_hover_text_color("#4BFF87")
+        self.add_visit_button.clicked.disconnect()
+        self.add_visit_button.clicked.connect(self.show_add_visit_widget)
+
+    def update_button_for_finish_visit(self):
+        """
+        Настраивает кнопку для завершения текущего посещения.
+        """
+        self.add_visit_button.setText("Закончить посещение")
+        self.add_visit_button.set_border_color("#FF0000")
+        self.add_visit_button.set_font_color("#FF0000")
+        self.add_visit_button.set_hover_border_color("#FF0000")
+        self.add_visit_button.set_hover_text_color("#FF0000")
+        self.add_visit_button.clicked.disconnect()
+        self.add_visit_button.clicked.connect(self.finish_visit)
 
     def parse_subscription_type(self, subscription_type, visits_count):
         if not subscription_type:
@@ -331,8 +457,8 @@ class ClientProfileWindow(QWidget):
               AND v.time_end <= (SELECT valid_until FROM subscription WHERE subscription_id = (SELECT subscription FROM client WHERE client_id = %s));
             """
             current_subscription_visits = \
-            execute_query(current_subscription_visits_query, (self.client_id, self.client_id, self.client_id),
-                          fetch_one=True)[0]
+                execute_query(current_subscription_visits_query, (self.client_id, self.client_id, self.client_id),
+                              fetch_one=True)[0]
 
             tariff_description = self.parse_subscription_type(subscription_type, current_subscription_visits)
             if subscription_type == "one_time":
@@ -425,6 +551,10 @@ class ClientProfileWindow(QWidget):
 
         hbox.addWidget(left_column, 1)
         hbox.addWidget(right_column, 1)
+        if self.role == "Управляющий":
+            del_btn = HoverButton("X", 30, 30, 55, '#8F2D31', True, '#8F2D31', 'red', 8, 'red')
+            hbox.addWidget(del_btn, 1)
+            del_btn.clicked.connect(lambda _, v=visit: self.delete_visit_by_id(v))
 
         visit_widget.setStyleSheet("""
             QWidget#visit_widget {
@@ -457,10 +587,33 @@ class ClientProfileWindow(QWidget):
             period_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         date_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         time_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        visit_widget.setFixedHeight(60)
-        visit_widget.setFixedWidth(350)
+        if self.role == "Управляющий":
+            visit_widget.setFixedHeight(70)
+            visit_widget.setFixedWidth(360)
 
         return visit_widget
+
+    def delete_visit_by_id(self, visit_id):
+        print(visit_id["visit_id"])
+        delete_query = """
+        DELETE FROM visit_fitness_room
+        WHERE visit_id = %s;
+        """
+        execute_query(delete_query, (visit_id["visit_id"],))
+
+        # 7. Удаляем виджет посещения из контейнера
+        for i in range(self.container_layout.count()):
+            item = self.container_layout.itemAt(i)
+            widget = item.widget()
+            if widget and isinstance(widget, QWidget) and widget.findChild(QLabel, "visit_id"):
+                # Здесь мы проверяем, есть ли у виджета ID посещения, чтобы удалить нужный
+                if widget.findChild(QLabel, "visit_id").text() == str(visit_id):
+                    widget.setParent(None)
+                    widget.deleteLater()
+                    break  # Найден и удален виджет, выходим из цикла
+
+        QMessageBox.information(self, "Удаление посещения", "Посещение успешно удалено.")
+        self.load_client_data()
 
     def show_add_visit_widget(self):
         add_visit_widget = QWidget()
@@ -522,9 +675,10 @@ class ClientProfileWindow(QWidget):
                     VALUES (%s, %s, %s, %s)
                     RETURNING visit_id;
                     """
-            visit_id = execute_query(insert_query, (self.client_id, start_timestamp, end_timestamp,in_gym), fetch_one=True)[0]
+            visit_id = \
+            execute_query(insert_query, (self.client_id, start_timestamp, end_timestamp, in_gym), fetch_one=True)[0]
 
-            #тип абонемента
+            # тип абонемента
             subscription_type_query = """
             SELECT tariff
             FROM subscription
@@ -533,7 +687,6 @@ class ClientProfileWindow(QWidget):
             );
             """
             subscription_type = execute_query(subscription_type_query, (self.client_id,), fetch_one=True)[0]
-
 
             update_subscription_query = """
             UPDATE subscription
@@ -566,6 +719,30 @@ class ClientProfileWindow(QWidget):
                 self.update_visit_count()
         else:
             print("Ошибка: время посещения недопустимо.")
+
+
+
+    def update_subscription_label(self, subscription_id, current_visits_count):
+        """
+        Обновляет текст абонемента, включая информацию о оставшихся посещениях.
+        """
+        # Получаем тариф
+        query = """
+        SELECT tariff
+        FROM subscription
+        WHERE subscription_id = %s;
+        """
+        tariff = execute_query(query, (subscription_id,), fetch_one=True)[0]
+
+        if "8" in tariff or "12" in tariff:
+            total_visits = int(tariff.split('_')[0])  # Получаем общее количество посещений (8 или 12)
+            visits_left = total_visits - current_visits_count  # Оставшиеся посещения
+            tariff_description = f"{visits_left} из {total_visits} занятий"
+        else:
+            tariff_description = "Безлимитный"
+
+        subscription_period = self.subscription_label.text().split("\n")[0].split("Абонемент ")[1]
+        self.subscription_label.setText(f"Абонемент {subscription_period}\n{tariff_description}")
 
     def validate_visit_time(self, start_time, end_time):
         try:
@@ -600,7 +777,7 @@ class ClientProfileWindow(QWidget):
                   AND DATE(time_start) = %s;
                 """
                 daily_visits_count = \
-                execute_query(check_daily_visit_query, (self.client_id, current_date), fetch_one=True)[0]
+                    execute_query(check_daily_visit_query, (self.client_id, current_date), fetch_one=True)[0]
                 if daily_visits_count > 0:
                     QMessageBox.warning(self, "Ошибка", "Допустимо не более одного занятия в день.")
                     return False
@@ -669,7 +846,6 @@ class ClientProfileWindow(QWidget):
             if tariff and tariff.split('_')[0].isdigit():
                 total_visits = int(tariff.split('_')[0])
                 if visits_count >= total_visits:
-
                     self.add_visit_button.setEnabled(False)
                     self.add_visit_button.setText("Абонемент заморожен")
                     self.add_visit_button.set_border_color("#FFA500")
@@ -682,9 +858,6 @@ class ClientProfileWindow(QWidget):
                 self.subscription_label.setText(
                     f"Абонемент {subscription_period}\n{tariff_description}"
                 )
-
-
-
 
     def paintEvent(self, event):
         painter = QPainter(self)

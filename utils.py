@@ -1,6 +1,7 @@
 import datetime
 import hashlib
 import logging
+import os
 import random
 import sys
 import hashlib
@@ -23,20 +24,25 @@ import psycopg2  # Для подключения к базе данных Postgr
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, \
     QGraphicsDropShadowEffect, QSpacerItem, QTableWidgetItem, QLineEdit, QTableWidget, QHeaderView, QListWidget, \
-    QSizePolicy, QMenu, QAction, QWidgetAction
+    QSizePolicy, QMenu, QAction, QWidgetAction, QMessageBox, QDialog
 from PyQt5.QtChart import QChartView, QBarSeries, QBarSet, QChart, QBarCategoryAxis, QValueAxis
-from PyQt5.QtCore import Qt, QMargins, QDir, pyqtSignal, QThread, QSettings, QRectF, QPointF
-from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QFontDatabase, QPixmap, QPainterPath, QRegion, QCursor
+from PyQt5.QtCore import Qt, QMargins, QDir, pyqtSignal, QThread, QSettings, QRectF, QPointF, QPoint
+from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QIcon, QFontDatabase, QPixmap, QPainterPath, QRegion, QCursor, \
+    QPen
 from PyQt5.QtCore import QTimer
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import datetime
 
-from database import connect_to_db
-
+from client_profile import ClientProfileWindow
+from database import connect_to_db, get_all_admins, check_today_visits, register_visit, deactivate_subscription, \
+    get_subscription_info, get_client_id_by_card
+from hover_button import HoverButton
 
 logger = logging.getLogger(__name__)
+
+
 class RoundedMenu(QMenu):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,7 +94,6 @@ class RoundedMenu(QMenu):
 
         # Применяем маску для закругленных углов
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
-
 
     def enterEvent(self, event):
         """
@@ -166,12 +171,79 @@ class HoverLabel(QWidget):
             self.callback()
 
 
+def resources_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
+class ClickableLabelForSlots(QLabel):
+    def __init__(self, text, client_id, role=None,parent=None):
+        super().__init__(text, parent)
+        self.role = role
+        self.client_id = client_id
+        self.setCursor(Qt.PointingHandCursor)  # Делаем курсор в виде указателя (рука)
+
+    def mousePressEvent(self, event):
+        """Открывает окно профиля клиента при клике"""
+        if self.client_id:
+            self.client_profile_window = ClientProfileWindow(self.client_id,self.role)
+            self.client_profile_window.show()
+
+
+class LoadAdminsThread(QThread):
+    result_signal = pyqtSignal(list)
+    error_signal = pyqtSignal(str)
+
+    def run(self):
+        try:
+            admins = get_all_admins()
+            self.result_signal.emit(admins)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
+def correct_to_nominative_case(month_name):
+    """Корректирует родительный падеж месяца в именительный, с большой буквы."""
+    # Месяцы в родительном падеже
+    months_genitive = {
+        "января": "январь",
+        "февраля": "февраль",
+        "марта": "март",
+        "апреля": "апрель",
+        "мая": "май",
+        "июня": "июнь",
+        "июля": "июль",
+        "августа": "август",
+        "сентября": "сентябрь",
+        "октября": "октябрь",
+        "ноября": "ноябрь",
+        "декабря": "декабрь"
+    }
+
+    # Возвращаем месяц в именительном падеже с большой буквы
+    return months_genitive.get(month_name.lower(), month_name).capitalize()
+
+
+def center(self):
+    """Центрирует окно на экране"""
+
+    screen_geometry = QApplication.primaryScreen().availableGeometry()  # Получаем размеры экрана
+    screen_center = screen_geometry.center()  # Находим центр экрана
+    window_geometry = self.frameGeometry()  # Получаем геометрию окна
+    window_geometry.moveCenter(screen_center)  # Центрируем окно по экрану
+    self.move(window_geometry.topLeft())  # Перемещаем окно в вычисленную позицию
+
+
 class ClickableLabel(QLabel):
     # Создаем сигнал, который будет срабатывать при клике на метку
     clicked = pyqtSignal()
 
     def __init__(self, text='', parent=None):
         super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
 
     def mousePressEvent(self, event):
         # При клике на метку генерируется сигнал
@@ -180,8 +252,8 @@ class ClickableLabel(QLabel):
 
 class WorkerThread(QThread):
     result_signal = pyqtSignal(object)  # Сигнал для передачи результата
-    error_signal = pyqtSignal(str)     # Сигнал для передачи ошибок
-    finished_signal = pyqtSignal()     # Сигнал для завершения потока
+    error_signal = pyqtSignal(str)  # Сигнал для передачи ошибок
+    finished_signal = pyqtSignal()  # Сигнал для завершения потока
 
     def __init__(self, func, *args, **kwargs):
         super().__init__()
@@ -204,6 +276,155 @@ class WorkerThread(QThread):
         self._stop_requested = True
 
 
+class ScanCardDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__()
+        self.setWindowTitle("Сканирование карты")
+
+        self.oldPos = self.pos()
+        self.radius = 18
+        self.borderWidth = 5
+        self.setGeometry(300, 300, 400, 200)
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        self.card_number = None  # Инициализация атрибута
+        self.initUI()
+
+    def accept(self):
+        """Вызывается при успешном сканировании карты."""
+        if self.card_number:
+            super().accept()
+        else:
+            QMessageBox.warning(self, "Ошибка", "Карта не была отсканирована.")
+
+    def reject(self):
+        """Вызывается при нажатии кнопки "Отмена"."""
+        self.card_number = None  # Сбрасываем состояние
+        super().reject()
+
+    def initUI(self):
+        layout = QVBoxLayout(self)
+
+        self.label = QLabel("Ожидание сканирования карты...", self)
+        self.label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.label)
+
+        self.cancel_button = HoverButton("Отмена")
+        self.cancel_button.clicked.connect(self.reject)
+        layout.addWidget(self.cancel_button)
+
+        spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
+        layout.addItem(spacer)
+
+        self.setLayout(layout)
+
+        # Запускаем сканирование в отдельном потоке
+        self.start_scan()
+
+    def start_scan(self):
+        self.scan_thread = WorkerThread(self.scan_card)
+        self.scan_thread.result_signal.connect(self.process_card)
+        self.scan_thread.error_signal.connect(self.show_error)
+        self.scan_thread.start()
+
+    def scan_card(self):
+        """Сканирование карты с последовательного порта с тайм-аутом"""
+        baudrate = 115200
+        card_number = None
+        timeout_seconds = 5  # Максимальное время ожидания сканирования
+        start_time = time.time()
+
+        available_ports = serial.tools.list_ports.comports()
+        for port_info in available_ports:
+            port = port_info.device
+            try:
+                serial_port = serial.Serial(port, baudrate, timeout=1)
+
+                while time.time() - start_time < timeout_seconds:
+                    if self.scan_thread._stop_requested:  # Проверяем, не остановлен ли поток
+                        return None
+
+                    if serial_port.in_waiting > 0:
+                        data = serial_port.read(serial_port.in_waiting).decode('utf-8')
+                        card_number = data.strip()
+                        break
+                    time.sleep(0.1)  # Ждем данные
+
+                if card_number:
+                    break  # Если получили карту, выходим из цикла портов
+
+            except serial.SerialException as e:
+                print(f"Ошибка работы с портом {port}: {e}")
+                continue
+
+            finally:
+                if 'serial_port' in locals() and serial_port.is_open:
+                    serial_port.close()
+
+        return card_number
+
+    def process_card(self, card_number):
+        """Проверка и регистрация визита"""
+        if not card_number:
+            QMessageBox.warning(self, "Ошибка", "Карта не была отсканирована.")
+            self.reject()
+            return
+
+        self.card_number = card_number  # Сохраняем номер карты
+        self.db_thread = WorkerThread(self.handle_card_processing, card_number)
+        self.db_thread.result_signal.connect(self.visit_registered)
+        self.db_thread.error_signal.connect(self.show_error)
+        self.db_thread.start()
+
+    def handle_card_processing(self, card_number):
+        """Обработка логики регистрации визита"""
+        client_id = get_client_id_by_card(card_number)
+        if not client_id:
+            raise Exception("Эта карта не привязана ни к одному клиенту.")
+
+        subscription_info = get_subscription_info(client_id)
+        if not subscription_info:
+            raise Exception("У клиента нет активного абонемента.")
+
+        subscription_id, tariff, valid_since, valid_until, is_valid, visit_ids = subscription_info
+
+        # Автоматическая деактивация просроченного абонемента
+        today = datetime.date.today()
+        if valid_until < today and is_valid:
+            deactivate_subscription(subscription_id)
+            raise Exception("Абонемент просрочен и был деактивирован.")
+
+        if not is_valid:
+            raise Exception("Абонемент недействителен.")
+
+        tariff_type = tariff.split('_')[1]
+        max_visits = int(tariff.split('_')[0]) if tariff.split('_')[0].isdigit() else None
+
+        current_hour = datetime.datetime.now().hour
+        if tariff_type == "mrn" and current_hour >= 16:
+            raise Exception("Абонемент клиента действует только до 16:00.")
+        elif tariff_type == "evn" and current_hour < 16:
+            raise Exception("Абонемент клиента действует только после 16:00.")
+
+        last_visit_today = check_today_visits(client_id)
+        if last_visit_today and max_visits and len(visit_ids) >= max_visits:
+            raise Exception("Клиент уже исчерпал лимит посещений.")
+
+        visit_id = register_visit(client_id, subscription_id)
+
+        if max_visits and len(visit_ids) + 1 >= max_visits:
+            deactivate_subscription(subscription_id)
+
+        return f"Посещение зафиксировано. ID визита: {visit_id}"
+
+    def visit_registered(self, message):
+        QMessageBox.information(self, "Успех", message)
+        self.accept()
+
+    def show_error(self, error_message):
+        QMessageBox.critical(self, "Ошибка", error_message)
+        self.reject()
 
 
 def load_fonts_from_dir(directory):
@@ -212,6 +433,7 @@ def load_fonts_from_dir(directory):
         _id = QFontDatabase.addApplicationFont(fi.absoluteFilePath())
         families |= set(QFontDatabase.applicationFontFamilies(_id))
     return families
+
 
 # class ResizablePhoto(QLabel):
 #     def __init__(self, image_path, parent=None):
@@ -307,23 +529,95 @@ class FillPhoto(QLabel):
             logger.debug("Фото масштабировано при изменении размера виджета.")
         else:
             logger.debug("Нет фото для масштабирования при изменении размера виджета.")
+
+
 class ResizablePhoto(QLabel):
-    def __init__(self, image_path, parent=None):
+    def __init__(self, image_path="", parent=None):
         super().__init__(parent)
         self.image_path = image_path
-        self.setScaledContents(False)  # Отключаем автоматическое масштабирование содержимого
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet("""
+            background-color: lightgray;
+            border-radius: 10px;
+            border: 3px solid #75A9A7;
+            font-size: 20px;
+            color: #555555;
+        """)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # Позволяем растягиваться
-        self.pixmap_original = QPixmap(self.image_path)  # Сохраняем оригинальное изображение
+        self.pixmap_original = QPixmap()  # Изначально пустое изображение
+
+        if self.image_path:
+            self.setPhoto(self.image_path)
+        else:
+            self.setText("Фото не установлено")
+
+    def setPhoto(self, image_path):
+        """
+        Устанавливает фото из файла.
+        :param image_path: Путь к изображению
+        """
+        pixmap = QPixmap(image_path)
+        if not pixmap.isNull():
+            self.pixmap_original = pixmap
+            self.updateScaledPhoto()
+            self.setText("")  # Убираем текст, если фото загружено
+            logger.info(f"Фото успешно загружено из файла: {image_path}")
+        else:
+            self.showError("Не удалось загрузить фото")
+            logger.error(f"Не удалось загрузить фото из файла: {image_path}")
+
+    def setPhotoData(self, photo_data):
+        """
+        Устанавливает фото из байтовых данных.
+        :param photo_data: Байтовые данные изображения
+        """
+        if photo_data:
+            pixmap = QPixmap()
+            if pixmap.loadFromData(photo_data):
+                self.pixmap_original = pixmap
+                self.updateScaledPhoto()
+                self.setText("")  # Убираем текст, если фото загружено
+                logger.info("Фото успешно загружено из байтовых данных.")
+            else:
+                self.showError("Не удалось загрузить фото")
+                logger.error("Не удалось загрузить фото из байтовых данных.")
+        else:
+            self.showError("Фото не установлено")
+            logger.warning("Фото не установлено: данные отсутствуют.")
 
     def resizeEvent(self, event):
-        """Обрабатывает изменение размера виджета и масштабирует изображение."""
+        """
+        Обеспечивает масштабирование изображения при изменении размера виджета.
+        """
         if not self.pixmap_original.isNull():
-            # Масштабируем изображение с сохранением пропорций
+            self.updateScaledPhoto()
+            logger.debug("Фото масштабировано при изменении размера виджета.")
+        else:
+            logger.debug("Нет фото для масштабирования при изменении размера виджета.")
+
+    def updateScaledPhoto(self):
+        """
+        Масштабирует изображение в соответствии с размером виджета.
+        """
+        if not self.pixmap_original.isNull():
             scaled_pixmap = self.pixmap_original.scaled(
                 self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             self.setPixmap(scaled_pixmap)
-        super().resizeEvent(event)
+
+    def showError(self, message):
+        """
+        Показывает сообщение об ошибке вместо изображения.
+        """
+        self.setText(message)
+        self.setStyleSheet("""
+            background-color: lightgray;
+            border-radius: 10px;
+            border: 3px solid #75A9A7;
+            font-size: 20px;
+            color: red;
+        """)
+
 
 # Пример использования
 class TariffCalculator:
@@ -379,6 +673,7 @@ class TariffCalculator:
             return f"{class_key}_{time_key}_{period_key}"
         else:
             raise ValueError("Неверные параметры для тарифа.")
+
 
 # class TariffCalculator:
 #     def __init__(self):
@@ -452,15 +747,18 @@ def format_datetime(date_obj):
         return date_obj.strftime("%d.%m.%y")
     return ""
 
+
 def calculate_age(birth_date):
     """Вычисляет возраст на основе даты рождения"""
     today = datetime.date.today()
     delta = today - birth_date
     return delta.days // 365
 
+
 def get_day_of_week(date_obj):
     """Возвращает день недели для заданной даты"""
     return date_obj.strftime("%A")  # Например, 'Monday'
+
 
 def get_time_slot(time):
     """Определяет временной интервал по времени"""
@@ -481,12 +779,59 @@ def get_time_slot(time):
             return "20-22"
     return ""
 
+
 def is_valid_visitor_data(data):
     """Проверяет, валидны ли данные о посетителе (например, ID или имя)"""
     if isinstance(data, dict):
         required_fields = ["name", "id", "subscription_status"]
         return all(field in data and bool(data[field]) for field in required_fields)
     return False
+
+
+class ScanCardThread(QThread):
+    """Поток для сканирования карты, чтобы не блокировать UI."""
+    card_scanned = pyqtSignal(str)
+    scanner_not_found = pyqtSignal()
+
+    def run(self):
+        baudrate = 115200
+        card_number = None
+
+        # Получаем список всех доступных портов
+        available_ports = serial.tools.list_ports.comports()
+
+        if not available_ports:
+            self.scanner_not_found.emit()
+            return
+
+        for port_info in available_ports:
+            port = port_info.device  # COM-порт (например, COM3 или /dev/ttyUSB0)
+            print(f"Попытка подключения к {port}")
+
+            try:
+                serial_port = serial.Serial(port, baudrate, timeout=1)
+
+                while True:
+                    if serial_port.in_waiting > 0:
+                        data = serial_port.read(serial_port.in_waiting).decode('utf-8')
+                        print(f"Полученные данные с {port}: {data}")
+                        card_number = data.strip()
+                        break
+                    time.sleep(0.1)
+
+                if card_number:
+                    self.card_scanned.emit(card_number)
+                    break  # Выход после успешного сканирования
+
+            except serial.SerialException as e:
+                print(f"Ошибка подключения к {port}: {e}")
+
+            finally:
+                if 'serial_port' in locals() and serial_port.is_open:
+                    serial_port.close()
+
+        if not card_number:
+            self.scanner_not_found.emit()
 
 
 def scan_card():

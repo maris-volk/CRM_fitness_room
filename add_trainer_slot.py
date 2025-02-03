@@ -11,6 +11,8 @@ from hover_button import HoverButton
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PyQt5.QtCore import Qt
 
+from utils import center
+
 
 class ClientWidget(QWidget):
     """виджет клиента."""
@@ -48,10 +50,11 @@ class ClientWidget(QWidget):
 class AddSlotWindow(QWidget):
     slot_added = pyqtSignal(dict)
 
-    def __init__(self, selected_client=None, subscription_data=None, existing_slots=None, selected_date=None):
+    def __init__(self, selected_client=None, subscription_data=None, existing_slots=None, selected_date=None, trainer_id=None):
         super().__init__()
         print(selected_client)
         self.selected_client = selected_client
+        self.trainer_id = trainer_id
         self.subscription_data = subscription_data
         self.selected_date = selected_date
         self.existing_slots = existing_slots or []  # список [(start_time, end_time)]
@@ -63,7 +66,7 @@ class AddSlotWindow(QWidget):
         self.borderWidth = 5
         self.client_list = []
         self.confirm_clicked = False
-
+        center(self)
         self.init_ui()
 
 
@@ -521,13 +524,37 @@ class AddSlotWindow(QWidget):
 
 
             # Отправка данных
-        slot_data = {
-            "client": formatted_client,
-            "start_time": start_time,
-            "end_time": end_time,
-        }
-        self.slot_added.emit(slot_data)
+        query = """
+                INSERT INTO training_slots (trainer, client, start_time, end_time)
+                VALUES (%s, %s, %s, %s)
+                RETURNING slot_id;
+            """
+        slot_id = execute_query(query, (
+            self.trainer_id,  # Передаем trainer_id
+            self.selected_client["client_id"],
+            f"{self.selected_date} {start_time}:00",
+            f"{self.selected_date} {end_time}:00"
+        ), fetch=True)
+
+        if slot_id and slot_id[0][0]:
+            slot_id = slot_id[0][0]
+            QMessageBox.information(self, "Успешно", "Слот успешно добавлен!")
+            slot_data = {
+                "slot_id": slot_id,
+                "client": self.selected_client["name"],
+                "client_id": self.selected_client["client_id"],
+                "start_time": start_qtime,
+                "end_time": end_qtime,
+                "date":self.selected_date
+            }
+            self.slot_added.emit(slot_data)  # Отправляем сигнал с данными слота
+
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось добавить слот в базу данных.")
+
         self.close()
+
+
 
     def can_add_slot(self, client, start_time, end_time):
 

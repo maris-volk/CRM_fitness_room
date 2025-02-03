@@ -12,7 +12,8 @@ from database import (
     get_average_visitors_per_weekday,
     get_average_visitors_per_month, get_average_visitors_per_week_in_month,
 )
-from utils import WorkerThread
+from hover_button import SvgHoverButton
+from utils import WorkerThread, resources_path
 
 logger = logging.getLogger(__name__)
 
@@ -34,31 +35,24 @@ class ChartWidget(QWidget):
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(10)
 
-        self.prev_button = QPushButton("<")
-        self.prev_button.setFixedSize(30, 30)
-        self.prev_button.setStyleSheet("""
-            QPushButton {
-                background-color: #628F8D;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                font-size: 16px;
-            }
-            QPushButton:hover {
-                background-color: #75A9A7;
-            }
-        """)
+        self.prev_button = SvgHoverButton(resources_path("src/prev.svg"), width=40, height=50,
+                                                default_color='#75A9A7',
+                                                hover_color="#88F9F5")
+
+
         self.prev_button.clicked.connect(self.go_prev)  # Подключение метода go_prev
         top_layout.addWidget(self.prev_button, alignment=Qt.AlignVCenter)
 
         # диаграмма
         self.chart_view = self.chart_view
-        self.chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         self.chart_view.setMinimumWidth(600)  # Устанавливаем минимальную ширину
         top_layout.addWidget(self.chart_view)
 
-        self.next_button = QPushButton(">")
-        self.next_button.setFixedSize(30, 30)
+        self.next_button = SvgHoverButton(resources_path("src/next.svg"), width=40, height=50,
+                                                default_color='#75A9A7',
+                                                hover_color="#88F9F5")
+
         self.next_button.setStyleSheet("""
             QPushButton {
                 background-color: #628F8D;
@@ -78,36 +72,38 @@ class ChartWidget(QWidget):
 
         # кнопки выбора периода
         bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setSpacing(10)
+        bottom_layout.setAlignment(Qt.AlignHCenter)
+        bottom_layout.setContentsMargins(30, 0, 30, 0)
+        bottom_layout.setSpacing(15)
 
         # кнопки выбора периода
         self.day_button = QPushButton("День")
         self.day_button.setFixedSize(80, 30)
         self.day_button.setStyleSheet(self.get_period_button_style(selected=True))
         self.day_button.clicked.connect(lambda: self.set_granularity('day'))
-        bottom_layout.addWidget(self.day_button)
+        bottom_layout.addWidget(self.day_button,Qt.AlignCenter)
+
 
         self.week_button = QPushButton("Неделя")
         self.week_button.setFixedSize(80, 30)
         self.week_button.setStyleSheet(self.get_period_button_style(selected=False))
         self.week_button.clicked.connect(lambda: self.set_granularity('week'))
-        bottom_layout.addWidget(self.week_button)
+        bottom_layout.addWidget(self.week_button,Qt.AlignCenter)
 
         self.month_button = QPushButton("Месяц")
         self.month_button.setFixedSize(80, 30)
         self.month_button.setStyleSheet(self.get_period_button_style(selected=False))
         self.month_button.clicked.connect(lambda: self.set_granularity('month'))
-        bottom_layout.addWidget(self.month_button)
+        bottom_layout.addWidget(self.month_button,Qt.AlignCenter)
 
         self.year_button = QPushButton("Год")
         self.year_button.setFixedSize(80, 30)
         self.year_button.setStyleSheet(self.get_period_button_style(selected=False))
         self.year_button.clicked.connect(lambda: self.set_granularity('year'))
-        bottom_layout.addWidget(self.year_button)
+        bottom_layout.addWidget(self.year_button,Qt.AlignRight)
 
         # добавляем растяжку для выравнивания кнопок по центру
-        bottom_layout.addStretch()
+
 
         self.layout.addLayout(bottom_layout)
 
@@ -219,21 +215,27 @@ class ChartWidget(QWidget):
 
     def show_tooltip(self, status, barset, index):
         """
-        подсказка при наведении на график.
+        Показывает всплывающую подсказку с количеством посетителей.
         """
-        if status:
-            #  index может быть целым числом, а barset объектом QBarSet
+        if not status:  # Если курсор ушел с элемента, ничего не делаем
+            return
+
+        try:
             if isinstance(barset, QBarSet) and isinstance(index, int):
-                value = barset.at(index)  # Получаем значение из QBarSet по индексу
-                tooltip_text = f"Посетители: {value}"
-                QToolTip.showText(QCursor.pos(), tooltip_text)
+                value = barset.at(index)
             elif isinstance(barset, int) and isinstance(index, QBarSet):
-                # порядок аргументов перепутан
-                value = index.at(barset)  # Здесь barset — это индекс
-                tooltip_text = f"Посетители: {value}"
-                QToolTip.showText(QCursor.pos(), tooltip_text)
+                value = index.at(barset)  # Поменялись местами
             else:
                 logger.warning(f"Неверные данные в сигнале hovered: barset={barset}, index={index}")
+                return
+
+            # Убираем `.0`, если число целое
+            tooltip_text = f"Посетители: {int(value) if value.is_integer() else round(value, 1)}"
+            self.setFocus()
+            QToolTip.showText(QCursor.pos(), tooltip_text)
+
+        except Exception as e:
+            logger.error(f"Ошибка в show_tooltip: {e}")
 
     def update_chart(self):
         """
@@ -252,7 +254,7 @@ class ChartWidget(QWidget):
             start_date = self.current_period
             end_date = self.current_period
             # запрос в отдельном потоке
-            self.fetch_data_thread = WorkerThread(get_max_visitors_per_hour, start_date, end_date)
+            self.fetch_data_thread = WorkerThread(get_max_visitors_per_hour, start_date)
             self.fetch_data_thread.result_signal.connect(
                 lambda data: self.process_chart_data(
                     data,
@@ -338,6 +340,7 @@ class ChartWidget(QWidget):
             set_visitors.append(data.get(category, 0))
 
         series.append(set_visitors)
+        series.hovered.connect(self.show_tooltip)
 
         axis_x = QBarCategoryAxis()
         axis_x.append(categories)
